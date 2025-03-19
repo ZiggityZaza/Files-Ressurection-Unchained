@@ -29,16 +29,17 @@ namespace FRU {
     // Runtime resources
 
     nlohmann::json settings;
+    cslib::VirtualPath backupIntoPath;
     std::deque<BackupFolder> backupFolders;
 
 
     void prase_settings() {
       if (!std::filesystem::exists(settingsPath)) {
         out << "No settings file found. If you deleted it, you are an idiot.\n";
-        out << "'auto' - create one in here; 'C:\\...' - create one in the specified path\n";
+        out << "'auto' - create one in here; 'C:\\...' - create one in the specified path; '' to exit\n";
         std::string path = out.ask();
-        if (path != "auto")
-          settingsPath = path;
+        if (path != "auto") settingsPath = path;
+        else if (path == "") std::exit(0);
         std::ofstream(settingsPath) << INITIAL_SETTINGS_CONTENT; // Create a new settings file
         out << "Settings file created\n";
       }
@@ -47,6 +48,7 @@ namespace FRU {
       for (auto &folder : settings["BACKUPED_FOLDERS"]) {
         backupFolders.push_back({folder[BCKPD_FLDR_PTH_INDX].get<std::string>()});
       }
+      backupIntoPath = settings["BACKUP_INTO_PATH_USERS_PUBLIC"].get<std::string>();
       out << "Settings parsed\n";
     }
 
@@ -54,7 +56,7 @@ namespace FRU {
     void startup_backup() {
       for (FRU::BackupFolder &folder : backupFolders) {
         // Incremental copy of files using built-in Windows robocopy
-        std::string command = "robocopy " + folder.where.path + " " + settings["BACKUP_INTO_PATH_USERS_PUBLIC"].get<std::string>() + " /MIR /MT:4"; // std::thread::hardware_concurrency();
+        std::string command = "robocopy " + folder.where.path + " " + this->backupIntoPath.path + " /MIR /MT:4"; // std::thread::hardware_concurrency();
         system(command.c_str());
       }
     }
@@ -63,6 +65,10 @@ namespace FRU {
 
     Main() {
       // Setup and runtime
+
+      // Setup
+      this->prase_settings();
+      
     }
 
   };
