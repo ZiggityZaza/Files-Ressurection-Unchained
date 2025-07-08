@@ -548,7 +548,7 @@ namespace cslib {
       prefix += L" ";
     }
     template <typename T>
-    std::wostream& operator<<(const T& msg) {
+    std::wostream& operator<<(const T& msg) const {
       /*
         Print to console with the given prefix
         Example:

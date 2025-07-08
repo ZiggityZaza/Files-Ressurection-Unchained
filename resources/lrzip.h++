@@ -1,11 +1,13 @@
-#include "resources/cslib.h++"
+#include "./cslib.h++"
 #pragma once
 
-
-namespace LRZTAR { // TODO: Check https://github.com/ckolivas/lrzip for lrzdir
+namespace LRZTAR {
   using namespace cslib;
   /*
-    Compress and decompress stuff using LRZip
+    Compress and archive folders from the exchange folder so
+    that they can be restored later
+    Note:
+      We use lrztar (from lrzip) for compression
     Important note:
       At compression, it matters how the path is specified. lrztar will
       also contain all the parent paths of the source directory. So
@@ -21,108 +23,150 @@ namespace LRZTAR { // TODO: Check https://github.com/ckolivas/lrzip for lrzdir
       directory, make it inside the same directory as the executable.
       This doesn't matter for decompression. Decompression also acts
       differently. To be sure, decompress within the same directory
-      as the binary and the compressed file.
+      as the binary and the compressed file
   */
 
-  MACRO LRZTAR_VIEW_CLI = L"lrzcat \"{FILEPATH}\" | tar -tv";
-  MACRO LRZTAR_COMPRESS_CLI = L"lrztar -z ";
-  MACRO LRZTAR_DECOMPRESS_CLI = L"lrztar -d ";
-  MACRO LRZTAR_EXTENSION = L".tar.lrz";
-  Out lrztarOut("[LRZTAR]:");
+  // MACRO DECOMPRESS_CMD_HEAD = "lrztar -d ";
+  // MACRO DECOMPRESS_CMD_TAIL = "\"";
+  Folder decompress(const File&) = delete;
+  Folder decompress() = delete;
+  // No support for decompression due to excessive complexity
+
+  MACRO LRZCAT_CMD_HEAD = "lrzcat \"";
+  MACRO LRZCAT_CMD_TAIL = "\" | tar -tv";
+  MACRO COMPRESS_CMD_HEAD = "lrztar -z \"";
+  MACRO COMPRESS_CMD_TAIL = "\""; // Keep it a string literal, so it can be concatenated with the path
+  MACRO EXPECTED_EXTENSION = L".tar.lrz";
+  std::wostream& out = std::wcout;
+  const Folder EXCHANGE_FOLDER(L"/root/shared"); // Grab targets from (immutable)
+  Folder BACKUP_FOLDER(L"/root/archive"); // Put compressed files in here
+  Folder WORKING_DIR(std::filesystem::current_path().wstring());
 
 
-  void print_lrztar_content(File sourceFile) {
+
+  Folder carry_here(const Folder& toBeCompressed) {
     /*
-      Print the content of a tar.lrz file.
+      Copy the folder that is supposed to be
+      handled by this program to this directory
+      Note:
+        Target MUST be in the Exchange Folder
       Example:
-        print_lrztar_content("my_dir.tar.lrz");
-        // Prints the content of my_dir.tar.lrz
+        carry_here(Folder(L"/root/shared/docs"));
+        // Copies the folder "docs" to "/root/shared"
     */
+    if (toBeCompressed.is.parent().isAt != EXCHANGE_FOLDER.is.isAt)
+      throw_up("Target folder '", toBeCompressed.wstr(), "' isn't in the exchange folder '", EXCHANGE_FOLDER.wstr(), "'"); 
+    if (contains(WORKING_DIR.content, toBeCompressed.is))
+      throw_up("Target folder '", toBeCompressed.wstr(), "' is already in the working directory '", WORKING_DIR.wstr(), "'");
 
-    // std::string command = format(LRZTAR_VIEW_CLI, {{"FILEPATH", sourceFile.asStr()}}); // lrzcat "my_dir.tar.lrz" | tar -tv
-    cslib::sh_call(command);
+    out << "Copying folder '" << toBeCompressed.wstr() << "' to working directory '" << WORKING_DIR.wstr() << "'";
+    Folder copyOfToBeCompressed(toBeCompressed.is.copy_into(WORKING_DIR.is).isAt.wstring());
+    WORKING_DIR.update();
+    out << "Copied folder '" << toBeCompressed.wstr() << "' to working directory '" << WORKING_DIR.wstr() << "'\n";
+    if (!contains(WORKING_DIR.content, copyOfToBeCompressed.is))
+      throw_up("Failed to copy folder '", toBeCompressed.wstr(), "' to working directory '", WORKING_DIR.wstr(), "'");
+    return copyOfToBeCompressed;
   }
 
 
-  File compress(Folder sourceDir) {
+  void archive(File& compressedFile) {
     /*
-      Compress a directory into a tar.lrz file. A tar.lrz file will be
-      created next the executable. The sourceDir will not be deleted.
+      Move the compressed file to the backup
+      folder
       Example:
-        File compressed = compress("docs");
-        // docs.tar.lrz is created in workspace
-      Note: If sourceDir is deleted, instances of it will be invalid
-      and cause a crash if accessed.
+        File compressedFile(L"./docs.tar.lrz");
+        archive(compressedFile);
+        // Moves the file to "/root/archive/docs.tar.lrz"
     */
+    if (compressedFile.is.parent().isAt != WORKING_DIR.is.isAt)
+      throw_up("Compressed file '", compressedFile.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
+    if (contains(BACKUP_FOLDER.content, compressedFile.is))
+      throw_up("Compressed file '", compressedFile.wstr(), "' is already in the backup folder '", BACKUP_FOLDER.wstr(), "'");
 
-    if (sourceDir.location.parent_path().locationAsStr != std::filesystem::current_path().string())
-      throw std::runtime_error("Source dir '" + sourceDir.asStr() + "' is not in working dir '" + std::filesystem::current_path().string() + "'");
+    compressedFile.is.move_to(BACKUP_FOLDER.is);
+    BACKUP_FOLDER.update();
+    if (!contains(BACKUP_FOLDER.content, compressedFile.is))
+      throw_up("Failed to move compressed file '", compressedFile.wstr(), "' to backup folder '", BACKUP_FOLDER.wstr(), "'");
+    out << L"Archived compressed file '" << compressedFile.wstr() << L"' to '" << BACKUP_FOLDER.wstr() << L"'";
+  }
+
+
+  void peek_into_compressed(const File& compressedFile) {
+    /*
+      Print the content of the compressed file
+      to the console
+      Example:
+        peek_into_compressed(File(L"./docs.tar.lrz"));
+        // Prints the content of the compressed file
+    */
+    if (compressedFile.is.parent().isAt != WORKING_DIR.is.isAt)
+      throw_up("Compressed file '", compressedFile.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
     
-    std::string willBecome = sourceDir.location.filename() + LRZTAR_EXTENSION; // docs + .tar.lrz
-    if (std::filesystem::exists(willBecome))
-      THROW_HERE("File '" + willBecome + "' already exists");
-
-    cslib::sh_call(str(LRZTAR_COMPRESS_CLI) + " \"" + sourceDir.location.filename() + "\""); // lrztar -z docs
-
-    return File(willBecome);
-  }
-  File compress(Folder sourceDir, Folder putIn) {
-    /*
-      Compress a directory into a tar.lrz file. The sourceDir will be deleted.
-      Example:
-        File compressed = compress_and_move("docs", "/root/backups");
-        // docs.tar.lrz is created in workspace and moved to /root/backups
-    */
-
-    std::string wouldBecome = putIn.asStr() + VirtualPath::PATH_SEPARATOR + sourceDir.location.filename() + LRZTAR_EXTENSION;
-    if (std::filesystem::exists(wouldBecome))
-      THROW_HERE("File '" + wouldBecome + "' already exists");
-
-    compress(sourceDir).location.move_to(putIn.location);
-
-    return File(wouldBecome); // Check for existence again with constructor
+    out << "Content of '" << compressedFile.wstr() << "':\n";
+    sh_call(LRZCAT_CMD_HEAD + to_str(compressedFile.wstr()) + LRZCAT_CMD_TAIL);
   }
 
 
-  Folder decompress(File sourceFile) {
+  File compress(const Folder& toBeCompressed) {
     /*
-      Decompress a tar.lrz file. Folder is located in workspace
+      Compress the folder and return the compressed file
       Example:
-        Folder decompressed = decompress("docs.tar.lrz");
-        // docs is created in workspace
+        File compressedFile = compress(Folder(L"./docs"));
+        // Compressed file is "./docs.tar.lrz"
     */
-
-    if (sourceFile.location.parent_path().locationAsStr != std::filesystem::current_path().string())
-      throw std::runtime_error("Source file '" + sourceFile.location.parent_path().locationAsStr + "' is not in working dir '" + std::filesystem::current_path().string() + "'");
-
-    std::string sourceName = sourceFile.asStr(); // docs.tar.lrz
-    if (sourceName.substr(sourceName.length() - str(LRZTAR_EXTENSION).length()) != LRZTAR_EXTENSION)
-      THROW_HERE("File '" + sourceName + "' is not a '" + LRZTAR_EXTENSION + "' file");
-      /*
-        .extension() wouldn't recognize the .tar in .tar.lrz as part of the extension
-      */
-
-    std::string willBecome = sourceName.substr(0, sourceName.length() - str(LRZTAR_EXTENSION).length()); // Remove ".tar.lrz"
+    if (toBeCompressed.is.parent().isAt != WORKING_DIR.is.isAt)
+      throw_up("Folder '", toBeCompressed.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
+    
+    wstr_t willBecome = toBeCompressed.is.isAt.wstring() + EXPECTED_EXTENSION;
     if (std::filesystem::exists(willBecome))
-      THROW_HERE("Folder '" + willBecome + "' already exists");
+      throw_up("Compressed file '", willBecome, "' already exists in the working directory '", WORKING_DIR.wstr(), "'");
 
-    cslib::sh_call(str(LRZTAR_DECOMPRESS_CLI) + " \"" + sourceName + "\""); // lrztar -d "docs.tar.lrz"
-    return Folder(willBecome);
+    out << "Compressing folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'";
+    sh_call(COMPRESS_CMD_HEAD + to_str(toBeCompressed.wstr()) + COMPRESS_CMD_TAIL);
+    out << "Compressed folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'\n";
+    WORKING_DIR.update();
+    File willBecomeFile(willBecome);
+    if (!contains(WORKING_DIR.content, willBecomeFile.is))
+      throw_up("Failed to compress folder '", toBeCompressed.wstr(), "' to '", willBecome, "'");
+    return willBecomeFile;
   }
-  Folder decompress(File sourceFile, Folder putIn) {
+
+
+  void pull_and_archive(const Folder& toBeCompressed) {
     /*
-      Decompress a tar.lrz file. The sourceFile will be deleted.
+      Pull the folder from the exchange folder,
+      compress it and archive it
       Example:
-        Folder decompressed = decompress_and_move("docs.tar.lrz", "/root/backups");
-        // docs is created in workspace and moved to /root/backups
+        pull_and_archive(Folder(L"./docs"));
+        // Pulls the folder "docs" from "/root/shared", compresses it and archives it
     */
+    out << "Pulling folder '" << toBeCompressed.wstr() << "' from exchange folder '" << EXCHANGE_FOLDER.wstr() << "'\n";
+    Folder copyOfToBeCompressed = carry_here(toBeCompressed);
+    File compressedFile = compress(copyOfToBeCompressed);
+    archive(compressedFile);
+    out << "Done! Compressed file is '" << compressedFile.wstr() << "'\n";
+  }
 
-    std::string willBecome = putIn.asStr() + VirtualPath::PATH_SEPARATOR + sourceFile.location.filename().substr(0, sourceFile.location.filename().length() - str(LRZTAR_EXTENSION).length());
-    if (std::filesystem::exists(willBecome))
-      THROW_HERE("Folder '" + willBecome + "' already exists");
 
-    Folder ex = decompress(sourceFile);
-    ex.location.move_to(putIn.location);
-    return Folder(willBecome);
+  void go_back_to_sleep() {
+    /*
+      After compressing and archiving the
+      folders, hibernate the program until
+      the next run on the 1st of the next
+      month at 3:30 AM
+      Example:
+        go_back_to_sleep();
+        // Hibernates the program until the next run
+    */
+    out << "Going back to sleep...\n";
+    
+    // Get the current time and calculate the next run time
+    using namespace std::chrono;
+
+    auto now = std::chrono::system_clock::now();
+    auto today = std::chrono::floor<std::chrono::days>(now); // Midnight today
+    std::chrono::year_month_day todayYMD = std::chrono::year_month_day{today};
+
+    std::chrono::year_month_day next_month
   }
 };
