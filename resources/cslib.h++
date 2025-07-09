@@ -576,6 +576,32 @@ namespace cslib {
     std::chrono::system_clock::time_point timePoint;
     TimeStamp() {update();}
     TimeStamp(std::chrono::system_clock::time_point tp) : timePoint(tp) {}
+    TimeStamp(uint sec, uint min, uint hour, uint day, uint month, uint year) {
+      /*
+        Create a time stamp from the given date and time
+        after making sure that the date is valid.
+      */
+      // Determine date
+      std::chrono::year_month_day ymd{
+        std::chrono::year(year),
+        std::chrono::month(month),
+        std::chrono::day(day)
+      };
+      if (!ymd.ok())
+        throw_up("Invalid date: ", year, "-", month, "-", day);
+      // Determine time
+      if (hour >= 24 || min >= 60 || sec >= 60)
+        throw_up("Invalid time: ", hour, ":", min, ":", sec);
+      std::chrono::hh_mm_ss hms{
+        std::chrono::hours(hour) +
+        std::chrono::minutes(min) +
+        std::chrono::seconds(sec)
+      };
+      // Combine date and time into a time point
+      timePoint = std::chrono::system_clock::time_point(
+        std::chrono::sys_days(ymd).time_since_epoch() + hms.to_duration()
+      );
+    }
     void update() {
       timePoint = std::chrono::system_clock::now();
     }
@@ -586,6 +612,36 @@ namespace cslib {
       */
       std::time_t time = std::chrono::system_clock::to_time_t(timePoint);
       return (std::wstringstream() << std::put_time(std::gmtime(&time), L"%Y-%m-%d %H:%M:%S")).str();
+    }
+    uint get_year() const {
+      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
+      return uint(int(ymd.year()));
+    }
+    uint get_month() const {
+      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
+      return uint(ymd.month());
+    }
+    uint get_day() const {
+      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
+      return uint(ymd.day());
+    }
+    uint get_hour() const {
+      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
+      auto time_since_midnight = timePoint - day_point;
+      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
+      return uint(hms.hours().count());
+    }
+    uint get_minute() const {
+      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
+      auto time_since_midnight = timePoint - day_point;
+      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
+      return uint(hms.minutes().count());
+    }
+    uint get_second() const {
+      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
+      auto time_since_midnight = timePoint - day_point;
+      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
+      return uint(hms.seconds().count());
     }
   };
   void sleep_until(const TimeStamp& untilPoint) {
@@ -671,6 +727,11 @@ namespace cslib {
       }
     }
 
+    wstr_t wstr() const {
+      if (isAt.empty())
+        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
+      return isAt.wstring();
+    }
     std::filesystem::file_type type() const {
       /*
         Returns the type of the path.
@@ -764,6 +825,12 @@ namespace cslib {
       std::filesystem::copy(this->isAt, willBecome);
       return VirtualPath(willBecome);
     }
+    bool operator==(const VirtualPath& other) const {
+      return this->isAt == other.isAt;
+    }
+    bool operator!=(const VirtualPath& other) const {
+      return !(*this == other);
+    }
   };
 
 
@@ -845,6 +912,29 @@ namespace cslib {
       if (is.isAt.empty())
         throw_up("Uninitialized path for folder at ", to_ptrstr(this));
       return is.isAt.wstring();
+    }
+    bool has(const VirtualPath& item) const {
+      /*
+        Check if the folder contains the given item.
+        Example:
+          Folder folder("/gitstuff/cslib");
+          VirtualPath item("/gitstuff/cslib/cslib.h++");
+          bool exists = folder.has(item);
+          // exists = true
+      */
+      if (is.isAt.empty())
+        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
+      return contains(content, item);
+    }
+    bool has(const File& item) const {
+      if (is.isAt.empty())
+        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
+      return contains(content, item.is);
+    }
+    bool has(const Folder& item) const {
+      if (is.isAt.empty())
+        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
+      return contains(content, item.is);
     }
     void update() {
       if (is.isAt.empty())

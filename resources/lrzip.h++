@@ -54,16 +54,16 @@ namespace LRZTAR {
         carry_here(Folder(L"/root/shared/docs"));
         // Copies the folder "docs" to "/root/shared"
     */
-    if (toBeCompressed.is.parent().isAt != EXCHANGE_FOLDER.is.isAt)
+    if (!EXCHANGE_FOLDER.has(toBeCompressed))
       throw_up("Target folder '", toBeCompressed.wstr(), "' isn't in the exchange folder '", EXCHANGE_FOLDER.wstr(), "'"); 
-    if (contains(WORKING_DIR.content, toBeCompressed.is))
+    if (WORKING_DIR.has(toBeCompressed))
       throw_up("Target folder '", toBeCompressed.wstr(), "' is already in the working directory '", WORKING_DIR.wstr(), "'");
 
     out << "Copying folder '" << toBeCompressed.wstr() << "' to working directory '" << WORKING_DIR.wstr() << "'";
-    Folder copyOfToBeCompressed(toBeCompressed.is.copy_into(WORKING_DIR.is).isAt.wstring());
+    Folder copyOfToBeCompressed(toBeCompressed.is.copy_into(WORKING_DIR.is).wstr());
     WORKING_DIR.update();
     out << "Copied folder '" << toBeCompressed.wstr() << "' to working directory '" << WORKING_DIR.wstr() << "'\n";
-    if (!contains(WORKING_DIR.content, copyOfToBeCompressed.is))
+    if (!WORKING_DIR.has(copyOfToBeCompressed))
       throw_up("Failed to copy folder '", toBeCompressed.wstr(), "' to working directory '", WORKING_DIR.wstr(), "'");
     return copyOfToBeCompressed;
   }
@@ -78,14 +78,14 @@ namespace LRZTAR {
         archive(compressedFile);
         // Moves the file to "/root/archive/docs.tar.lrz"
     */
-    if (compressedFile.is.parent().isAt != WORKING_DIR.is.isAt)
+    if (!WORKING_DIR.has(compressedFile))
       throw_up("Compressed file '", compressedFile.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
-    if (contains(BACKUP_FOLDER.content, compressedFile.is))
+    if (BACKUP_FOLDER.has(compressedFile))
       throw_up("Compressed file '", compressedFile.wstr(), "' is already in the backup folder '", BACKUP_FOLDER.wstr(), "'");
 
     compressedFile.is.move_to(BACKUP_FOLDER.is);
     BACKUP_FOLDER.update();
-    if (!contains(BACKUP_FOLDER.content, compressedFile.is))
+    if (!BACKUP_FOLDER.has(compressedFile.is))
       throw_up("Failed to move compressed file '", compressedFile.wstr(), "' to backup folder '", BACKUP_FOLDER.wstr(), "'");
     out << L"Archived compressed file '" << compressedFile.wstr() << L"' to '" << BACKUP_FOLDER.wstr() << L"'";
   }
@@ -99,7 +99,7 @@ namespace LRZTAR {
         peek_into_compressed(File(L"./docs.tar.lrz"));
         // Prints the content of the compressed file
     */
-    if (compressedFile.is.parent().isAt != WORKING_DIR.is.isAt)
+    if (!WORKING_DIR.has(compressedFile))
       throw_up("Compressed file '", compressedFile.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
     
     out << "Content of '" << compressedFile.wstr() << "':\n";
@@ -114,7 +114,7 @@ namespace LRZTAR {
         File compressedFile = compress(Folder(L"./docs"));
         // Compressed file is "./docs.tar.lrz"
     */
-    if (toBeCompressed.is.parent().isAt != WORKING_DIR.is.isAt)
+    if (!WORKING_DIR.has(toBeCompressed))
       throw_up("Folder '", toBeCompressed.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
     
     wstr_t willBecome = toBeCompressed.is.isAt.wstring() + EXPECTED_EXTENSION;
@@ -126,7 +126,7 @@ namespace LRZTAR {
     out << "Compressed folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'\n";
     WORKING_DIR.update();
     File willBecomeFile(willBecome);
-    if (!contains(WORKING_DIR.content, willBecomeFile.is))
+    if (!WORKING_DIR.has(willBecomeFile))
       throw_up("Failed to compress folder '", toBeCompressed.wstr(), "' to '", willBecome, "'");
     return willBecomeFile;
   }
@@ -153,20 +153,34 @@ namespace LRZTAR {
       After compressing and archiving the
       folders, hibernate the program until
       the next run on the 1st of the next
-      month at 3:30 AM
+      month at 3 AM
+      Note:
+        3 am is the most probable time
+        that the system is idle, so the
+        program can run without the user
+        can notice performance issues.
       Example:
         go_back_to_sleep();
         // Hibernates the program until the next run
     */
     out << "Going back to sleep...\n";
-    
-    // Get the current time and calculate the next run time
-    using namespace std::chrono;
-
-    auto now = std::chrono::system_clock::now();
-    auto today = std::chrono::floor<std::chrono::days>(now); // Midnight today
-    std::chrono::year_month_day todayYMD = std::chrono::year_month_day{today};
-
-    std::chrono::year_month_day next_month
+    uint currentMonth = TimeStamp().get_month();
+    uint targetYear = TimeStamp().get_year();
+    uint nextMonth = currentMonth + 1;
+    if (nextMonth > 12) {
+      nextMonth = 1;
+      ++targetYear;
+    }
+    TimeStamp nextRun(
+      0,
+      0,
+      3,
+      1,
+      nextMonth,
+      targetYear
+    );
+    out << "Next run will be on " << nextRun.asWstr() << "\n";
+    // Hibernate the program until the next run
+    cslib::sleep_until(nextRun);
   }
 };
