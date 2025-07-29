@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <iostream> // Already contains many libraries
 #include <optional>
+#include <utility>
 #include <fstream>
+#include <sstream>
 #include <variant>
 #include <cstring>
 #include <cstdint>
@@ -21,16 +23,21 @@
 #include <cctype>
 #include <cstdio>
 #include <random>
-#include <thread>
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <locale>
 #include <array>
 #include <deque>
 #include <cmath>
 #include <list>
 #include <map>
 #include <set>
+#ifdef _WIN32
+  #include <windows.h>
+  #include <io.h>
+  #include <fcntl.h>
+#endif
 
 
 #pragma once
@@ -40,10 +47,9 @@
   Prevent multiple inclusions of this header file
 */
 
-
-#if __cplusplus < 202002L
-  #error "Requires C++ >= 20"
-#endif
+#define CPLUSPLUSERRORMAKER_HELPER(x) #x
+#define CPLUSPLUSERRORMAKER(x) CPLUSPLUSERRORMAKER_HELPER(x)
+static_assert(__cplusplus >= 202002L, "Requires C++20 or newer. Current version is " CPLUSPLUSERRORMAKER(__cplusplus));
 
 
 
@@ -53,436 +59,357 @@ namespace cslib {
 
   // Other
   using wstr_t = std::wstring;
-  using wstrsv_t = std::wstring_view;
+  using str_t = std::string;
+  using wstrv_t = std::wstring_view;
+  using strv_t = std::string_view;
   #define SHARED inline // Alias inline for shared functions, etc.
   #define MACRO inline constexpr auto // Macros for macro definitions
   #define FIXED inline constexpr // Explicit alternative for MACRO
 
 
 
-  // Functions
+  // Defined beforehand to avoid circular dependencies
+  MACRO to_str(wchar_t _wchar) {
+    if (_wchar > 0xFF) // If the character is not representable in a single byte
+      throw std::runtime_error("to_str(wchar_t) cannot convert wide character to narrow string");
+    return std::string(1, static_cast<char>(_wchar));
+  }
+  MACRO to_str(const wchar_t *const _cwstr) {
+    // No constexpr version for std::wclen
+    size_t len = 0;
+    while (_cwstr[len] != 0)
+      ++len;
+    for (size_t i = 0; i < len; ++i)
+      if (_cwstr[i] > 0xFF) // If the character is not representable in a single byte
+        throw std::runtime_error("to_str(const wchar_t *const) cannot convert wide string to narrow string");
+    return std::string(_cwstr, _cwstr + len);
+  }
+  MACRO to_str(const wstr_t& _wstr) {return std::string(_wstr.begin(), _wstr.end());}
+  MACRO to_str(wstrv_t _wstrv) {return std::string(_wstrv.begin(), _wstrv.end());}
+  str_t to_str(const auto& _anything) {
+    std::ostringstream oss;
+    oss << _anything;
+    return oss.str();
+  }
+
+  MACRO to_wstr(char _char) { return std::wstring(1, static_cast<wchar_t>(_char)); }
+  MACRO to_wstr(const char *const _cstr) {return std::wstring(_cstr, _cstr + std::strlen(_cstr));}
+  MACRO to_wstr(const str_t& _str) {return std::wstring(_str.begin(), _str.end());}
+  MACRO to_wstr(strv_t _strv) {return std::wstring(_strv.begin(), _strv.end());}
+  wstr_t to_wstr(const auto& _anything) {
+    std::wostringstream woss;
+    woss << _anything;
+    return woss.str();
+  }
+
+
+
+  template <typename... _args>
+  std::runtime_error up_impl(size_t _lineInCode, _args&&... _msgs) {
+    /*
+      Create a custom runtime error with the given messages.
+      Example:
+        #define up(...) up_impl(__LINE__, __VA_ARGS__)
+        if (1 == 2)
+          throw up("Aye", L"yo", '!', 123);
+    */
+    std::ostringstream oss;
+    oss << "\033[1m" << "\033[31m" << "Error: ";
+    ((oss << to_str(std::forward<_args>(_msgs))), ...);
+    oss << "\033[0m" << std::flush;
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    return std::runtime_error("std::runtime_error called from line " + std::to_string(_lineInCode) + " in workspace '" + currentPath.string() + "' because: " + oss.str());
+  }
+  #define throw_up(...) throw cslib::up_impl(__LINE__, __VA_ARGS__)
+
+
+
   void pause(size_t ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
   }
 
 
 
-  // Find the correct way to convert T to string
-  template <typename T>
-  std::string to_ptrstr(T* value) {
-    /*
-      Convert a pointer to a cool looking
-      pointer address string.
-      Example:
-        cslib::to_str(&value) // "0x123"
-    */
-    if (value == nullptr)
-      return "nullptr"; // Handle null pointers
-    std::ostringstream oss;
-    oss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(value);
-    return oss.str();
-  }
-  std::string to_str(char value) {
-    return std::string(1, value); // Convert char to string
-  }
-  std::string to_str(wchar_t value) {
-    return std::string(1, static_cast<char>(value)); // Convert wchar_t to string
-  }
-  std::string to_str(std::string_view value) {
-    /*
-      Also for const char*
-    */
-    return std::string(value.data(), value.data() + value.size());
-  }
-  std::string to_str(wstrsv_t value) {
-    /*
-      Also for const wchar_t*
-      Note: This is a lossy conversion, as wchar_t can represent characters
-      that cannot be represented in a single byte string.
-      Use with caution, as it may lead to data loss.
-    */
-    return std::string(value.data(), value.data() + value.size());
-  }
-  template <std::integral T>
-  std::string to_str(T value) {
-    return std::string(std::to_string(value));
-  }
-  template <std::floating_point T>
-  std::string to_str(T value) {
-    return std::string(std::to_string(value));
-  }
-
-  // Find the correct way to convert T to wide string
-  template <typename T>
-  wstr_t to_ptrwstr(T* value) {
-    /*
-      Convert a pointer to a cool looking
-      pointer address string.
-      Example:
-        cslib::to_wstr(&value) // "0x123"
-    */
-    if (value == nullptr)
-      return L"nullptr"; // Handle null pointers
-    std::wostringstream oss;
-    oss << L"0x" << std::hex << reinterpret_cast<std::uintptr_t>(value);
-    return oss.str();
-  }
-  wstr_t to_wstr(char value) {
-    return wstr_t(1, static_cast<wchar_t>(value));
-  }
-  wstr_t to_wstr(wchar_t value) {
-    return wstr_t(1, value);
-  }
-  wstr_t to_wstr(std::string_view value) {
-    /*
-      Also for const char*
-    */
-    return wstr_t(value.data(), value.data() + value.size());
-  }
-  wstr_t to_wstr(wstrsv_t value) {
-    /*
-      Also for const wchar_t*
-    */
-    return wstr_t(value.data(), value.data() + value.size());
-  }
-  template <std::integral T>
-  wstr_t to_wstr(T value) {
-    return wstr_t(std::to_wstring(value));
-  }
-  template <std::floating_point T>
-  wstr_t to_wstr(T value) {
-    return wstr_t(std::to_wstring(value));
+  MACRO wstrlen(wstrv_t _wstrv) {
+    return _wstrv.length();
   }
 
 
 
-  template <typename T>
-  void print(const T& msg) {
-    std::wcout << msg << std::flush;
+  MACRO upper_chr(wchar_t _wchar) {
+    return (_wchar >= L'a' and _wchar <= L'z') ? (_wchar - (L'a' - L'A')) : _wchar;
   }
-  template <typename T>
-  void print(T&& msg) {
-    std::wcout << std::forward<T>(msg) << std::flush;
+  MACRO upper_str(wstrv_t _wstrv) {
+    std::wstring result(_wstrv.data());
+    for (wchar_t& c : result)
+      c = upper_chr(c);
+    return result;
   }
-  void print(const char *const msg) {
-    std::wcout << to_wstr(msg) << std::flush;
+  MACRO lower_chr(wchar_t _wchar) {
+    return (_wchar >= L'A' and _wchar <= L'Z') ? (_wchar + (L'a' - L'A')) : _wchar;
   }
-  void print(const std::string& msg) {
-    std::wcout << to_wstr(msg) << std::flush;
-  }
-  void print(std::string&& msg) {
-    std::wcout << to_wstr(std::move(msg)) << std::flush;
-  }
-  void print(std::string_view msg) {
-    std::wcout << to_wstr(msg) << std::flush;
-  }
-
-  template <typename T>
-  void println(const T& msg) {
-    std::wcout << msg << std::endl;
-  }
-  template <typename T>
-  void println(T&& msg) {
-    std::wcout << std::forward<T>(msg) << std::endl;
-  }
-  void println(const char *const msg) {
-    std::wcout << to_wstr(msg) << std::endl;
-  }
-  void println(const std::string& msg) {
-    std::wcout << to_wstr(msg) << std::endl;
-  }
-  void println(std::string&& msg) {
-    std::wcout << to_wstr(std::move(msg)) << std::endl;
-  }
-  void println(std::string_view msg) {
-    std::wcout << to_wstr(msg) << std::endl;
+  MACRO lower_str(wstrv_t _wstrv) {
+    std::wstring result(_wstrv.data());
+    for (wchar_t& c : result)
+      c = lower_chr(c);
+    return result;
   }
 
 
 
-  template <typename... Args>
-  std::runtime_error up_impl(size_t line, Args&&... messages) {
-    /*
-      Create a custom runtime error with the given messages.
-      Example:
-        #define up(...) up_impl(__LINE__, __VA_ARGS__)
-        if (1 == 2)
-          throw up("Hello", "World", 123, L"Wide string");
-    */
-    wstr_t message;
-    ((message += to_wstr(std::forward<Args>(messages))), ...);
-    std::wcout << L"\033[1m" << L"\033[31m" << L"Error: " << message << L"\033[0m" << std::endl;
-    std::filesystem::path currentPath = std::filesystem::current_path();
-    return std::runtime_error("std::runtime_error called from line " + std::to_string(line) + " in workspace '" + currentPath.string() + "'");
-  }
-  #define throw_up(...) throw up_impl(__LINE__, __VA_ARGS__)
-
-
-
-  void sh_call(std::string_view command) {
+  void sh_call(strv_t _command) {
     /*
       Blocking system call
     */
-    if (system(command.data()) != 0)  
-      throw_up("Failed to execute command: ", command);
+    if (system(_command.data()) != 0)  
+      throw_up("Failed to execute command: '", _command, "'");
   }
 
 
 
-  void clear_console() {
-    #ifdef _WIN32
-      sh_call("cls");
-    #else
-      sh_call("clear");
-    #endif
-  }
-
-
-
-  template <typename Key, typename Container>
-  bool contains(Container& lookIn, Key& lookFor) {
+  MACRO contains(const auto& _lookIn, const auto& _lookFor) {
     /*
       does `container` contain `key`
     */
-    return std::find(lookIn.begin(), lookIn.end(), lookFor) != lookIn.end();
+    return std::find(_lookIn.begin(), _lookIn.end(), _lookFor) != _lookIn.end();
   }
-  template <typename Containers>
-  bool have_something_common(Containers& c1, Containers& c2) {
+  MACRO have_something_common(const auto& _cont1, const auto& _cont2) {
     /*
       do `c1` and `c2` contain similar keys
     */
-    for (auto item : c1)
-      if (contains(c2, item))
+    for (const auto& item : _cont1)
+      if (contains(_cont2, item))
         return true;
     return false;
   }
 
 
 
-  std::string get_env(std::string_view var) {
+  MACRO recrusive_lookup(const auto& _lookIn, const auto& _lookFor) {
+    /*
+      Check if `container` contains `key` or if it contains
+      a container that contains `key`
+    */
+    for (const auto& item : _lookIn) {
+      if (item == _lookFor)
+        return true;
+      if constexpr (std::is_same_v<decltype(item), decltype(_lookIn)>)
+        if (recrusive_lookup(item, _lookFor))
+          return true;
+    }
+    return false;
+  }
+
+
+
+  str_t get_env(strv_t _var) {
     /*
       Get the value of an environment variable.
     */
-    const char *const envCStr = getenv(var.data());
+    const char *const envCStr = getenv(_var.data());
     if (envCStr == NULL)
-      throw_up("Environment variable '", var, "' not found");
-    return std::string(envCStr);
-  }
-
-
-
-  std::vector<int> range(int start, int end) {
-    /*
-      Simplified range function that takes two integers
-      and returns a vector of integers (inclusive)
-    */
-    std::vector<int> result;
-    if (start > end) // reverse
-      for (int i = start; i >= end; --i)
-        result.push_back(i);
-    else if (start < end) // start to end
-      for (int i = start; i <= end; ++i)
-        result.push_back(i);
-    else // just start
-      result.push_back(start);
-    return result;
-  }
-  std::vector<int> range(int end) {
-    return range(0, end);
-  }
-  std::vector<size_t> range(size_t start, size_t end) {
-    std::vector<size_t> result;
-    if (start > end) // reverse
-      for (size_t i = start; i >= end; --i)
-        result.push_back(i);
-    else if (start < end) // start to end
-      for (size_t i = start; i <= end; ++i)
-        result.push_back(i);
-    else // just start
-      result.push_back(start);
-    return result;
-  }
-  std::vector<size_t> range(size_t end) {
-    return range(size_t(0), end);
+      throw_up("Environment variable '", _var, "' not found");
+    return str_t(envCStr);
   }
 
 
 
   template <typename T>
-  T retry(const std::function<T()>& target, size_t retries, size_t delay = 0) {
+  requires std::is_integral_v<T>
+  std::vector<T> range(const T& _start, const T& _end) {
+    /*
+      Simplified range function that takes two integers
+      and returns a vector of integers (inclusive)
+    */
+    std::vector<T> result;
+    if (_start > _end) // reverse
+      for (T i = _start; i > _end; --i)
+        result.push_back(i);
+    else if (_start < _end) // start to end
+      for (T i = _start; i < _end; ++i)
+        result.push_back(i);
+    else // just start
+      result.push_back(_start);
+    return result;
+  }
+  template <typename T>
+  requires std::is_integral_v<T>
+  std::vector<T> range(const T& end) {
+    return range(T(0), end);
+  }
+
+
+
+  auto retry(const auto& _func, size_t _maxAttempts, size_t _waitTimeMs) {
     /*
       Retry a function up to `retries` times with a delay
       of `delay` milliseconds between each retry.
-      Note:
-        No lambda support
       Example:
         std::function<void()> func = []() {
           // Do something that might fail
         };
         cslib::retry(func, 3);
     */
-    if (retries == 0)
-      throw_up("Retries must be greater than 0");
-    for (size_t tried : range(retries)) {
+    while (_maxAttempts-- > 0) {
       try {
-        return target();
-      } catch (const std::exception& e) {
-        if (tried == retries - 1) {
-          throw_up("Function ", to_ptrstr(&target), " failed after ", retries, " retries: ", e.what());
-        }
-      } catch (...) {
-        // Catch all other exceptions
-        if (tried == retries - 1) {
-          throw_up("Function ", to_ptrstr(&target), " failed after ", retries, " retries: Unknown exception");
-        }
+        static_assert(std::is_invocable_v<decltype(_func)>, "Function must be invocable");
+        return _func();
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+      catch (const std::runtime_error& e) {
+        if (_maxAttempts == 0)
+          throw_up("Function failed after maximum attempts: ", e.what());
+        std::this_thread::sleep_for(std::chrono::milliseconds(_waitTimeMs)); // Wait before retrying
+      }
     }
-    return T(); // This line is unreachable but keeps compiler happy
+    throw_up("Function failed after maximum attempts");
   }
 
 
 
-  std::vector<std::string> parse_cli_args(int argc, const char *const argv[]) {
+  std::vector<strv_t> parse_cli_args(int _argc, const char *const _args[]) {
     /*
       Parse command line arguments and return them as a
       vector of strings.
       Note:
         The first argument is the program name, so we skip it
     */
-    std::vector<std::string> args;
-    if (argc <= 1)
-      return args; // No arguments provided
-    for (int i : range(1, argc - 1))
-      args.emplace_back(argv[i]);
+    if (_args == nullptr or _argc <= 0)
+      throw_up("No command line arguments provided");
+    std::vector<strv_t> args(_args, _args + _argc); // Includes binary name
+    args.erase(args.begin()); // Remove the first argument (program name)
     return args;
   }
 
 
 
-  FIXED wstrsv_t TRIM_WITH = L"...";
-  wstr_t shorten_end(wstrsv_t wstrsv, size_t maxLength) {
+  wstr_t stringify_container(const auto& _vec) {
     /*
-      Trim and content of `TRIM_WITH` to the end of the string
-      if it exceeds `maxLength`.
+      Convert a vector to a string representation.
       Example:
-        cslib::shorten_end(L"cslib.h++", 3);
-        // is "c..."
+        cslib::stringify_container({1, 2, 3}); // "{1, 2, 3}"
     */
-    if (maxLength < TRIM_WITH.length())
-      throw_up("maxLength must be greater than or equal to the length of TRIM_WITH (", TRIM_WITH.length(), ')');
-    wstr_t wstr(wstrsv);
-    if (wstr.length() > maxLength)
-      return wstr.substr(0, maxLength - TRIM_WITH.length()) + TRIM_WITH.data();
-    return wstr;
-  }
-  wstr_t shorten_begin(wstrsv_t wstrsv, size_t maxLength) {
-    /*
-      Trim and content of `TRIM_WITH` to the beginning of the string
-      if it exceeds `maxLength`.
-      Example:
-        cslib::shorten_begin(L"cslib.h++", 3);
-        // is "...h++"
-    */
-    if (maxLength < TRIM_WITH.length())
-      throw_up("maxLength must be greater than or equal to the length of TRIM_WITH (", TRIM_WITH.length(), ')');
-    wstr_t wstr(wstrsv);
-    if (wstr.length() > maxLength)
-      return TRIM_WITH.data() + wstr.substr(wstr.length() - (maxLength - TRIM_WITH.length()));
-    return wstr;
-  }
-
-
-
-  wstr_t upper(wstrsv_t wstrsv) {
-    /*
-      Converts it to uppercase.
-      Example:
-        to_upper("csLib.h++");
-        // is "CSLIB.H++"
-    */
-    wstr_t str(wstrsv);
-    return std::transform(str.begin(), str.end(), str.begin(), ::toupper), str;
-  }
-  void upper_ref(wstr_t& wstr) {
-    std::transform(wstr.begin(), wstr.end(), wstr.begin(), ::toupper);
-  }
-
-  wstr_t lower(wstrsv_t wstrsv) {
-    /*
-      Converts it to lowercase.
-      Example:
-        to_lower("csLib.h++");
-        // is "cslib.h++"
-    */
-    wstr_t str(wstrsv);
-    return std::transform(str.begin(), str.end(), str.begin(), ::tolower), str;
-  }
-  void lower_ref(wstr_t& wstr) {
-    std::transform(wstr.begin(), wstr.end(), wstr.begin(), ::tolower);
-  }
-
-
-
-  std::vector<wstr_t> separate(wstrsv_t wstrsv, wchar_t delimiter) {
-    /*
-      Same as above, but for wide strings.
-      Example:
-        cslib::separate(L"Hello World", ' ') // {"Hello", "World"}
-    */
-    wstr_t str(wstrsv);
-    std::vector<wstr_t> result;
-    wstr_t temp;
-
-    if (str.empty() or delimiter == L'\0')
-      return result;
-
-    for (wchar_t c : str) {
-      if (c == delimiter) {
-        result.push_back(temp);
-        temp.clear();
-      } else {
-        temp += c;
-      }
+    wstr_t result = L"{";
+    for (const auto& item : _vec)
+      result += to_wstr(item) + L", ";
+    if (result.length() > 1) { // If there are items
+      result.pop_back(); // Remove the last comma
+      result.pop_back(); // Remove the last space
     }
-
-    result.push_back(temp);
-
+    result += L"}";
     return result;
   }
 
 
 
-  size_t roll_dice(size_t min, size_t max) {
+  FIXED wstrv_t TRIM_WITH = L"...";
+  MACRO shorten_end(wstrv_t _wstrsv, size_t _maxLength) {
     /*
-      This function takes a minimum and maximum value and returns a random
-      number between them (inclusive).
+      Example:
+        cslib::shorten_end(L"cslib.h++", 6); // "csl..."
     */
+    if (_maxLength < TRIM_WITH.length())
+      throw_up("maxLength must be at least ", TRIM_WITH.length(), " (TRIM_WITH length)");
+    if (_wstrsv.length() <= _maxLength)
+      return wstr_t(_wstrsv);
+    return wstr_t(_wstrsv.substr(0, _maxLength - TRIM_WITH.length())) + TRIM_WITH.data();
+  }
 
-    if (min > max) std::swap(min, max);
-
-    // Special thanks to copilot. No idea what this does
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<size_t> dis(min, max);
-    return dis(gen);
+  MACRO shorten_begin(wstrv_t _wstrsv, size_t _maxLength) {
+    /*
+      Example:
+        cslib::shorten_begin(L"cslib.h++", 6); // "...h++"
+    */
+    if (_maxLength < TRIM_WITH.length())
+      throw_up("maxLength must be at least ", TRIM_WITH.length(), " (TRIM_WITH length)");
+    if (_wstrsv.length() <= _maxLength)
+      return wstr_t(_wstrsv);
+    return wstr_t(TRIM_WITH) + wstr_t(_wstrsv.substr(_wstrsv.length() - (_maxLength - TRIM_WITH.length())));
   }
 
 
 
-  wstr_t input() {
-    wstr_t input;
-    std::getline(std::wcin, input);
-    return input;
+  std::vector<wstr_t> separate(wstrv_t _wstrsv, wchar_t _delimiter) {
+    /*
+      Example:
+        cslib::separate(L"John Money", ' ') // {"John", "Money"}
+    */
+    wstr_t str(_wstrsv);
+    std::vector<wstr_t> result;
+    wstr_t temp;
+    if (str.empty() or _delimiter == L'\0')
+      return result;
+    for (wchar_t c : str) {
+      if (c == _delimiter)
+        result.push_back(std::move(temp));
+      else
+        temp += c;
+    }
+    result.push_back(temp);
+    return result;
   }
 
 
 
+  template <typename T>
+  requires std::is_integral_v<T>
+  T roll_dice(T _min, T _max) {
+    /*
+      Minimum and maximum value and returns a random
+      number between them (inclusive).
+      Example:
+        cslib::roll_dice(1, 6); // Returns a random number
+        between 1 and 6 (inclusive)
+    */
+    if (_min > _max) std::swap(_min, _max);
+    static std::mt19937 generator(std::random_device{}());
+    std::uniform_int_distribution<T> distribution(_min, _max);
+    return distribution(generator);
+  }
+
+
+
+  wstr_t read_wdata(std::wistream& _winStream) {
+    /*
+      Read all data from the given wistream and return it as a wstring.
+      After reading, the stream is considered empty.
+      Throws an error if the stream is not open or in a bad state.
+      Note:
+        Handling encoding, other states, flags or similar are managed
+        by the caller. This function only cleans up its own changes.
+    */
+    if (!_winStream or !_winStream.good())
+      throw_up("std::wistream is not good or in a bad state");
+    std::wstreampos previousPos = _winStream.tellg();
+    std::wstring result{std::istreambuf_iterator<wchar_t>(_winStream), std::istreambuf_iterator<wchar_t>()};
+    _winStream.seekg(previousPos);
+    return result;
+  }
+  void do_io(std::wistream& _winStream, std::wostream& _woutStream) {
+    _woutStream << read_wdata(_winStream) << std::flush;
+  }
+
+
+
+  // Get the first available UTF-8 locale
+  SHARED bool isWcharIOEnabled = false;
   void enable_wchar_io() {
-    // Set all io-streaming globally to UTF-8 encoding
+    if (isWcharIOEnabled) {
+      std::wcout << L"[👨‍❤️‍👨] Console already initialized with UTF-8 encoding.\n";
+      return;
+    }
 
-    // Get the first available UTF-8 locale
-    const std::vector<std::string_view> utf8_locales = {
+    #ifdef _WIN32
+      // Set Windows console to UTF-8 for wide IO
+      SetConsoleOutputCP(CP_UTF8);
+      SetConsoleCP(CP_UTF8);
+      _setmode(_fileno(stdout), _O_U8TEXT);
+      _setmode(_fileno(stdin), _O_U8TEXT);
+    #endif
+
+    std::locale utf8Locale;
+    const std::vector POSSIBLE_UTF8_LOCALES = {
+      "",
+      "C",
       "en_US.UTF-8",
       "en_US.utf8",
       "C.UTF-8",
@@ -490,29 +417,107 @@ namespace cslib {
       "C.utf8",
       "POSIX.utf8"
     };
-    std::locale utf8_locale;
-    for (std::string_view locale_name : utf8_locales) {
+    for (const char* name : POSSIBLE_UTF8_LOCALES) {
       try {
-        utf8_locale = std::locale(locale_name.data());
-      } catch (const std::runtime_error&) {
-        // Ignore the exception, try the next locale
-      }
+        utf8Locale = std::locale(name);
+        break;
+      } catch (...) {}
     }
-    if (utf8_locale.name().empty())
+
+    if (utf8Locale.name().empty())
       throw_up("Failed to find a suitable UTF-8 locale. Ensure your system supports UTF-8 locales");
 
-    std::locale::global(utf8_locale);
-    std::wcout.imbue(utf8_locale);
-    std::wcin.imbue(utf8_locale);
-    std::wclog.imbue(utf8_locale);
-    std::wcerr.imbue(utf8_locale);
+    std::locale::global(utf8Locale);
+    std::wcout.imbue(utf8Locale);
+    std::wcin.imbue(utf8Locale);
+    std::wclog.imbue(utf8Locale);
+    std::wcerr.imbue(utf8Locale);
 
-    std::wcout << L"[⛓️‍💥] Console initialized with UTF-8 encoding.\n";
+    std::wcout << L"[👨‍❤️‍👨] Console initialized with UTF-8 encoding (" << utf8Locale.name().data() << L").\n";
+    isWcharIOEnabled = true;
   }
 
 
 
-  // Classes
+  class TimeStamp { public:
+    /*
+      A wrapper around std::chrono
+    */
+    std::chrono::system_clock::time_point timePoint;
+    
+
+    // Contructors and error handling
+    TimeStamp() {timePoint = std::chrono::system_clock::now();}
+    TimeStamp(std::chrono::system_clock::time_point _tp) : timePoint(_tp) {}
+    TimeStamp(int _sec, int _min, int _hour, int _day, int _month, int _year) {
+      /*
+        Create a time stamp from the given date and time
+        after making sure that the date is valid.
+      */
+      // Determine date
+      std::chrono::year_month_day ymd{
+        std::chrono::year(_year),
+        std::chrono::month(_month),
+        std::chrono::day(_day)
+      };
+      if (!ymd.ok())
+        throw_up("Invalid date: ", _day, "-", _month, "-", _year);
+      // Determine time
+      if (_hour >= 24 or _min >= 60 or _sec >= 60)
+        throw_up("Invalid time: ", _hour, ":", _min, ":", _sec);
+      std::chrono::hh_mm_ss hms{
+        std::chrono::hours(_hour) +
+        std::chrono::minutes(_min) +
+        std::chrono::seconds(_sec)
+      };
+      // Combine date and time into a time point
+      timePoint = std::chrono::system_clock::time_point(
+        std::chrono::sys_days(ymd).time_since_epoch() + hms.to_duration()
+      );
+    }
+
+    wstr_t as_wstr() const {
+      /*
+        Convert the time point to (almost) ISO 8601
+        in format HH:MM:SS DD-MM-YYYY)..
+      */
+      std::time_t time = std::chrono::system_clock::to_time_t(timePoint);
+      return (std::wstringstream() << std::put_time(std::gmtime(&time), L"%H:%M:%S %d-%m-%Y")).str();
+    }
+    size_t year() const {
+      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
+      return size_t(int(ymd.year()));
+    }
+    size_t month() const {
+      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
+      return size_t(unsigned(ymd.month()));
+    }
+    size_t day() const {
+      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
+      return size_t(unsigned(ymd.day()));
+    }
+    size_t hour() const {
+      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
+      auto time_since_midnight = timePoint - day_point;
+      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
+      return size_t(hms.hours().count());
+    }
+    size_t minute() const {
+      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
+      auto time_since_midnight = timePoint - day_point;
+      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
+      return size_t(hms.minutes().count());
+    }
+    size_t second() const {
+      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
+      auto time_since_midnight = timePoint - day_point;
+      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
+      return size_t(hms.seconds().count());
+    }
+  };
+
+
+
   MACRO Bold = L"\033[1m";
   MACRO Underline = L"\033[4m";
   MACRO Italic = L"\033[3m";
@@ -534,123 +539,30 @@ namespace cslib {
         cslib::Out error("Error: ", cslib::Out::Color::RED);
         error << "Something went wrong";
     */
+    std::wostream& outTo;
     wstr_t prefix;
-    Out(wstrsv_t wprefsv, wstrsv_t color = L"") {
-      prefix = color;
-      prefix += wprefsv;
-      prefix += Reset;
-      prefix += L" ";
+    Out() = default;
+    Out(std::wostream& _outTo) : outTo(_outTo) {
+      if (!isWcharIOEnabled)
+        enable_wchar_io();
+      prefix = L"";
     }
-    Out(std::string_view prefsv, std::string_view color = "") {
-      prefix = to_wstr(color);
-      prefix += to_wstr(prefsv);
-      prefix += Reset;
-      prefix += L" ";
+    Out(std::wostream& _outTo, wstrv_t _prefsv = L"", wstrv_t _color = L"") : outTo(_outTo) {
+      std::wostringstream prefixStream;
+      prefixStream << _color << _prefsv;
+      if (!_prefsv.empty())
+        prefixStream << " ";
+      if (!_color.empty())
+        prefixStream << Reset;
+      prefix = prefixStream.str();
     }
-    template <typename T>
-    std::wostream& operator<<(const T& msg) const {
-      /*
-        Print to console with the given prefix
-        Example:
-          cslib::Out out(L"Info: ", GREEN);
-          out << "This is an info message" << std::endl;
-      */
-      std::wcout << prefix << msg << std::flush;
-      return std::wcout;
+    std::wostream& operator<<(const auto& _msg) const {
+      return outTo << '[' << TimeStamp().as_wstr() << ']' << prefix << _msg;
     }
-    std::wostream& operator<<(const std::string& msg) = delete;
-    std::wostream& operator<<(const std::string_view& msg) = delete;
-    std::wostream& operator<<(const char* msg) = delete;
-    /*
-      Syncing two streambuffers are unreliable and
-      requires a lot of workarounds. Enforcing wchar_t
-      allocated stream buffers is more unified and
-      easier to use
-    */
-  };
-
-
-
-  class TimeStamp { public:
-    // A wrapper around std::chrono that I have control over
-    std::chrono::system_clock::time_point timePoint;
-    TimeStamp() {update();}
-    TimeStamp(std::chrono::system_clock::time_point tp) : timePoint(tp) {}
-    TimeStamp(uint sec, uint min, uint hour, uint day, uint month, uint year) {
-      /*
-        Create a time stamp from the given date and time
-        after making sure that the date is valid.
-      */
-      // Determine date
-      std::chrono::year_month_day ymd{
-        std::chrono::year(year),
-        std::chrono::month(month),
-        std::chrono::day(day)
-      };
-      if (!ymd.ok())
-        throw_up("Invalid date: ", year, "-", month, "-", day);
-      // Determine time
-      if (hour >= 24 || min >= 60 || sec >= 60)
-        throw_up("Invalid time: ", hour, ":", min, ":", sec);
-      std::chrono::hh_mm_ss hms{
-        std::chrono::hours(hour) +
-        std::chrono::minutes(min) +
-        std::chrono::seconds(sec)
-      };
-      // Combine date and time into a time point
-      timePoint = std::chrono::system_clock::time_point(
-        std::chrono::sys_days(ymd).time_since_epoch() + hms.to_duration()
-      );
-    }
-    void update() {
-      timePoint = std::chrono::system_clock::now();
-    }
-    wstr_t asWstr() const {
-      /*
-        Convert the time point to (lighter form of) ISO 8601
-        in format YYYY-MM-DD HH:MM:SS)..
-      */
-      std::time_t time = std::chrono::system_clock::to_time_t(timePoint);
-      return (std::wstringstream() << std::put_time(std::gmtime(&time), L"%Y-%m-%d %H:%M:%S")).str();
-    }
-    uint get_year() const {
-      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
-      return uint(int(ymd.year()));
-    }
-    uint get_month() const {
-      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
-      return uint(ymd.month());
-    }
-    uint get_day() const {
-      auto ymd = std::chrono::year_month_day(std::chrono::floor<std::chrono::days>(timePoint));
-      return uint(ymd.day());
-    }
-    uint get_hour() const {
-      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
-      auto time_since_midnight = timePoint - day_point;
-      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
-      return uint(hms.hours().count());
-    }
-    uint get_minute() const {
-      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
-      auto time_since_midnight = timePoint - day_point;
-      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
-      return uint(hms.minutes().count());
-    }
-    uint get_second() const {
-      auto day_point = std::chrono::floor<std::chrono::days>(timePoint);
-      auto time_since_midnight = timePoint - day_point;
-      auto hms = std::chrono::hh_mm_ss(time_since_midnight);
-      return uint(hms.seconds().count());
+    std::wostream& operator<<(auto&& _msg) const {
+      return outTo << '[' << TimeStamp().as_wstr() << ']' << prefix << std::forward<decltype(_msg)>(_msg);
     }
   };
-  void sleep_until(const TimeStamp& untilPoint) {
-    // Sleep until the given time point.
-    if (untilPoint.timePoint <= std::chrono::system_clock::now()) {
-      throw_up("Cannot sleep until a time point in the past: ", TimeStamp().asWstr(), " (current time: ", untilPoint.asWstr(), ')');
-    }
-    std::this_thread::sleep_until(untilPoint.timePoint);
-  }
 
 
 
@@ -666,589 +578,296 @@ namespace cslib {
     Benchmark() {
       startTime = std::chrono::high_resolution_clock::now();
     }
-    size_t elapsed_ms() {
-      return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - startTime).count();
+    void reset() {
+      startTime = std::chrono::high_resolution_clock::now();
     }
-    size_t elapsed_us() {
-      return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - startTime).count();
-    }
-    size_t elapsed_ns() {
+    double elapsed_ns() {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - startTime).count();
+    }
+    double elapsed_ms() {
+      return elapsed_ns() / 1'000'000.0f; // Convert nanoseconds to milliseconds
+    }
+    double elapsed_us() {
+      return elapsed_ns() / 1'000.0f; // Convert nanoseconds to microseconds
     }
   };
 
 
 
-
-  #ifdef _WIN32
-    MACRO PATH_DELIMITER = L'\\';
-  #else
-    MACRO PATH_DELIMITER = L'/';
-  #endif
-  class VirtualPath { public:
-    // Wrapper around std::filesystem::path
-
-    std::filesystem::path isAt; 
-
-    VirtualPath() = default;
-    VirtualPath(wstrsv_t where) : isAt(std::filesystem::canonical(where.data())) {}
+  class FSEntry { public:
     /*
-      Constructor that takes a string and checks if it's a valid path.
-      Notes:
-        - If where is relative, it will be converted to an absolute path.
-        - If where is empty, you will crash.
+      Abstract base class for filesystem entries.
+      Represents a path in the filesystem and provides
+      methods to manage it.
     */
-    VirtualPath(wstrsv_t where, std::filesystem::file_type shouldBe) : VirtualPath(where) {
-      if (this->type() != shouldBe) {
-        wstr_t errorMsg = L"Path '" + to_wstr(where) + L"' should be of type '";
-        switch (shouldBe) {
-          case std::filesystem::file_type::regular: errorMsg += L"regular file"; break;
-          case std::filesystem::file_type::directory: errorMsg += L"directory"; break;
-          case std::filesystem::file_type::symlink: errorMsg += L"symlink"; break;
-          case std::filesystem::file_type::block: errorMsg += L"block device"; break;
-          case std::filesystem::file_type::character: errorMsg += L"character device"; break;
-          case std::filesystem::file_type::fifo: errorMsg += L"FIFO (named pipe)"; break;
-          case std::filesystem::file_type::socket: errorMsg += L"socket"; break;
-          default: errorMsg += L"unknown type";
-        }
-        errorMsg += L"', but is actually of type '";
-        switch (this->type()) {
-          case std::filesystem::file_type::regular: errorMsg += L"regular file"; break;
-          case std::filesystem::file_type::directory: errorMsg += L"directory"; break;
-          case std::filesystem::file_type::symlink: errorMsg += L"symlink"; break;
-          case std::filesystem::file_type::block: errorMsg += L"block device"; break;
-          case std::filesystem::file_type::character: errorMsg += L"character device"; break;
-          case std::filesystem::file_type::fifo: errorMsg += L"FIFO (named pipe)"; break;
-          case std::filesystem::file_type::socket: errorMsg += L"socket"; break;
-          default: errorMsg += L"unknown type";
-        }
-        errorMsg += L"'";
-        throw_up(errorMsg);
-      }
-    }
+    std::filesystem::path isAt; // Covers move and copy semantics
 
-    wstr_t wstr() const {
-      if (isAt.empty())
-        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
-      return isAt.wstring();
-    }
+    // Path management
+    wstr_t wstr() const { return isAt.wstring(); }
     std::filesystem::file_type type() const {
-      /*
-        Returns the type of the path.
-        Example:
-          VirtualPath path("/gitstuff/cslib/cslib.h++");
-          std::filesystem::file_type type = path.type();
-          // type = std::filesystem::file_type::regular
-      */
-      if (isAt.empty())
-        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
       return std::filesystem::status(isAt).type();
     }
-    VirtualPath parent() const {
-      /*
-        Returns the parent path of the path.
-        Example:
-          VirtualPath path("/gitstuff/cslib/cslib.h++");
-          VirtualPath parent = path.parent_path();
-          // parent = "/gitstuff/cslib"
-      */
-      if (isAt.empty())
-        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
-      if (isAt.parent_path().empty())
-        throw_up("VirtualPath '", to_ptrstr(this), "' has somehow no parent");
-      return VirtualPath(isAt.parent_path().wstring(), std::filesystem::file_type::directory);
+    std::chrono::system_clock::time_point last_modified() const {
+      auto ftime = std::filesystem::last_write_time(isAt);
+      return std::chrono::time_point_cast<std::chrono::system_clock::duration>(ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+    }
+    FSEntry parent() const {
+      return FSEntry(isAt.parent_path(), std::filesystem::file_type::directory);
     }
     size_t depth() const {
       /*
-        Returns the depth of the path.
         Example:
-          VirtualPath path("/gitstuff/cslib/cslib.h++");
+          FSEntry path("/gitstuff/cslib/cslib.h++");
           size_t depth = path.depth();
-          // depth = 2 (because there are 2 directories before the file)
+          // depth = 3 (because there are 3 directories before the file)
       */
-      if (isAt.empty())
-        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
-      return separate(isAt.wstring(), PATH_DELIMITER).size() - 1; // -1 for the last element
+      return separate(isAt.wstring(), std::filesystem::path::preferred_separator).size() - 1;
     }
-    TimeStamp last_modified() const {
-      /*
-        Last modified date of this instance.
-        Example:
-          VirtualPath path("/gitstuff/cslib/cslib.h++");
-          TimeStamp lastModified = path.last_modified();
-          // lastModified = 2023-10-01 12:34:56
-        Note:
-          Once more, special thanks to copilot. I scurried
-          through the std::filesystem documentation and
-          couldn't find a usable way to get the last modified
-          date of a file.
-      */
-      std::filesystem::file_time_type ftime = std::filesystem::last_write_time(isAt);
-      std::chrono::system_clock::time_point timePoint = std::chrono::time_point_cast<std::chrono::system_clock::duration>(ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
-      std::time_t cftime = std::chrono::system_clock::to_time_t(timePoint);
-      struct tm* timeinfo = std::localtime(&cftime);
-      TimeStamp ts(std::chrono::system_clock::from_time_t(std::mktime(timeinfo)));
-      return ts;
+
+    bool operator==(const FSEntry& _other) const { return this->isAt == _other.isAt; }
+    bool operator!=(const FSEntry& _other) const { return !(*this == _other); }
+    bool operator==(const std::filesystem::path& _other) const { return this->isAt == _other; }
+    bool operator!=(const std::filesystem::path& _other) const { return !(*this == _other); }
+    // Implicitly converts wide (c-)strings to std::filesystem::path 
+
+    // Transform into stl
+    operator wstr_t() const { return this->isAt.wstring(); }
+    operator std::filesystem::path() const { return this->isAt; }
+    operator std::filesystem::path&() { return this->isAt; }
+    operator const std::filesystem::path&() const { return this->isAt; }
+    operator std::filesystem::path*() { return &this->isAt; }
+    operator std::filesystem::path*() const { return const_cast<std::filesystem::path*>(&this->isAt); } // casted immutable
+    friend std::wostream& operator<<(std::wostream& _out, const FSEntry& _entry) {
+      return _out << _entry.isAt.wstring();
     }
-    void move_to(VirtualPath moveTo) {
-      // Move this instance to a new location and apply changes.
-      if (this->isAt.empty())
-        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
-      if (moveTo.isAt.empty())
-        throw_up("Target path is empty (this: '", this->isAt.wstring(), "', target: '", moveTo.isAt.wstring(), "')");
-      if (moveTo.type() != std::filesystem::file_type::directory)
-        throw_up("Target path '", moveTo.isAt.wstring(), "' is not a directory (this: '", this->isAt.wstring(), "')");
-      if (moveTo.isAt == this->isAt)
-        throw_up("Cannot move to the same path: ", this->isAt.wstring());
-      wstr_t willBecome = moveTo.isAt.wstring() + to_wstr(PATH_DELIMITER) + this->isAt.filename().wstring();
-      if (std::filesystem::exists(willBecome))
-        throw_up("Target path '", willBecome, "' already exists (this: '", this->isAt.wstring(), "')");
-      std::filesystem::rename(this->isAt, willBecome);
-      this->isAt = VirtualPath(willBecome).isAt; // Apply changes
-    }
-    VirtualPath copy_into(VirtualPath targetDict) const {
-      /*
-        Copies this instance to a new location and returns
-        a new VirtualPath instance pointing to the copied file.
-      */
-      if (this->isAt.empty())
-        throw_up("VirtualPath ", to_ptrstr(this), " isn't initialized");
-      if (targetDict.isAt.empty())
-        throw_up("Target path is empty (this: '", this->isAt.wstring(), "', target: '", targetDict.isAt.wstring(), "')");
-      if (targetDict.type() != std::filesystem::file_type::directory)
-        throw_up("Target path '", targetDict.isAt.wstring(), "' is not a directory (this: '", this->isAt.wstring(), "')");
-      if (targetDict.isAt == this->isAt)
-        throw_up("Cannot copy to the same path: ", this->isAt.wstring());
-      wstr_t willBecome = targetDict.isAt.wstring() + to_wstr(PATH_DELIMITER) + this->isAt.filename().wstring();
-      if (std::filesystem::exists(willBecome))
-        throw_up("Element '", willBecome, "' already exists in target directory (this: '", this->isAt.wstring(), "')");
-      std::filesystem::copy(this->isAt, willBecome);
-      return VirtualPath(willBecome);
-    }
-    bool operator==(const VirtualPath& other) const {
-      return this->isAt == other.isAt;
-    }
-    bool operator!=(const VirtualPath& other) const {
-      return !(*this == other);
+
+    FSEntry() = default;
+    FSEntry(const std::filesystem::path& _where) : isAt(std::filesystem::canonical(_where)) {}
+    FSEntry(const std::filesystem::path& _where, std::filesystem::file_type _type) : isAt(_where) {
+    if (_type != this->type())
+      throw_up("Path ", _where, " initialized with unexpected file type");
     }
   };
 
 
 
-  class File { public:
+  class Folder : public FSEntry { public:
     /*
-      Child class of VirtualPath that represents a file.
+      Child class of FSEntry that represents a folder.
+      Example:
+        Folder folder("/gitstuff/cslib");
+        if (folder.has(FSEntry("/gitstuff/cslib/cslib.h++")))
+          std::wcout << "Folder contains the file\n";
+    */
+    Folder() = default;
+    Folder(const std::filesystem::path& _where, bool _createIfNotExists = false) {
+      if (_where.empty())
+        throw_up("Path empty");
+      if (_createIfNotExists and !std::filesystem::exists(_where)) {
+        std::filesystem::create_directory(_where);
+        if (!std::filesystem::exists(_where))
+          throw_up("Failed to create folder ", _where);
+      } else
+        if (!std::filesystem::is_directory(_where))
+          throw_up("Path ", _where, " is not a directory");
+      isAt = std::filesystem::canonical(_where);
+    }
+
+    std::vector<FSEntry> list() const {
+      std::vector<FSEntry> entries;
+      for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(isAt))
+        entries.emplace_back(entry.path());
+      return entries;
+    }
+    bool has(const FSEntry& _item) const {
+      return contains(list(), _item);
+    }
+
+    void move_self_into(Folder& _newLocation) {
+      /*
+        Important note:
+          Upon moving, subfolders and files objects
+          will still point to the old location.
+      */
+      if (std::filesystem::exists(_newLocation.isAt / isAt.filename()))
+        throw_up("Path ", isAt, " already exists in folder ", _newLocation.isAt);
+      std::filesystem::rename(isAt, _newLocation.isAt / isAt.filename());
+      isAt = _newLocation.isAt / isAt.filename();
+    }
+    Folder copy_self_into(Folder& _newLocation, std::filesystem::copy_options _options = std::filesystem::copy_options::recursive) const {
+      std::filesystem::copy(isAt, _newLocation.isAt / isAt.filename(), _options);
+      return Folder(_newLocation.isAt / isAt.filename());
+    }
+  };
+
+
+
+  class File : public FSEntry { public:
+    /*
+      Child class of RouteToFile that represents a file.
       Example:
         File file("/gitstuff/cslib/cslib.h++");
-        std::string content = file.content();
-        // content = "Hello World"
+        str_t content = file.content();
+        // content = "Around 50 years ago, a group of people..."
     */
 
-    VirtualPath is; // Composition over inheritance
-
     File() = default;
-    File(wstrsv_t where) : is(where, std::filesystem::file_type::regular) {}
+    File(const std::filesystem::path& _where, bool _createIfNotExists = false) {
+      if (_where.empty())
+        throw_up("Path empty");
+      if (_createIfNotExists and !std::filesystem::exists(_where)) {
+        std::wofstream file(to_str(_where.wstring()));
+        if (!file.is_open())
+          throw_up("Failed to create file '", _where.wstring(), "'");
+      }
+      if (!std::filesystem::is_regular_file(_where))
+        throw_up("Path ", _where, " is not a regular file");
+      isAt = std::filesystem::canonical(_where);
+    }
 
-    wstr_t content(std::ios_base::openmode openMode = std::ios::in) const {
+    wstr_t content(std::ios_base::openmode _openMode = std::ios::in) const {
       /*
         Read the content of the file and return it as a string.
         Note:
           - No error-handling for files larger than available memory
       */
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for file at ", to_ptrstr(this));
-      std::wifstream file(is.isAt, openMode);
-      if (!file.is_open())
-        throw_up("Failed to open file '", is.isAt.wstring(), '\'');
-      if (!file.good())
-        throw_up("Failed to read file '", is.isAt.wstring(), '\'');
+      std::wifstream file(isAt, _openMode);
+      if (!file.is_open() or !file.good())
+        throw_up("Failed to read file ", isAt);
       return wstr_t((std::istreambuf_iterator<wchar_t>(file)), std::istreambuf_iterator<wchar_t>());
     }
-    std::string binary_content(std::ios_base::openmode openMode = std::ios::binary) const {
-      /*
-        Read the content of the file and return it as a binary string.
-        Note:
-          - No error-handling for files larger than available memory
-      */
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for file at ", to_ptrstr(this));
-      std::ifstream file(is.isAt, openMode);
-      if (!file.is_open())
-        throw_up("Failed to open file '", is.isAt.wstring(), '\'');
-      if (!file.good())
-        throw_up("Failed to read file '", is.isAt.wstring(), '\'');
-      return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    void edit(const auto& _newContent, std::ios_base::openmode _openMode = std::ios::out) const {
+      std::wofstream file(isAt, _openMode);
+      if (!file.is_open() or !file.good())
+        throw_up("Failed to access file ", isAt);
+      file << _newContent;
     }
-    wstr_t wstr() const {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for file at ", to_ptrstr(this));
-      return is.isAt.wstring();
+    wstr_t extension() const {return isAt.extension().wstring();}
+    size_t bytes() const {return std::filesystem::file_size(isAt);}
+
+    void move_self_into(Folder& _newLocation) {
+      if (std::filesystem::exists(_newLocation.isAt / isAt.filename()))
+        throw_up("Path ", isAt, " already exists in folder ", _newLocation.isAt);
+      std::filesystem::rename(isAt, _newLocation.isAt / isAt.filename());
+      isAt = _newLocation.isAt / isAt.filename(); // Update the path
     }
-    wstr_t extension() const {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for file at ", to_ptrstr(this));
-      return is.isAt.extension().wstring();
-    }
-    size_t bytes() const {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for file at ", to_ptrstr(this));
-      return std::filesystem::file_size(is.isAt);
+    File copy_self_into(Folder& _newLocation, std::filesystem::copy_options _options = std::filesystem::copy_options::none) const {
+      std::filesystem::copy(isAt, _newLocation.isAt / isAt.filename(), _options);
+      return File(_newLocation.isAt / isAt.filename());
     }
   };
 
 
 
-  class Folder { public:
+  MACRO RANDOM_ENTRY_NAME_LEN = 2; // n^59 possible combinations
+  wstr_t scramble_filename() {
     /*
-      Child class of VirtualPath that represents a folder and
-      everything in it.
+      Generate a random filename with a length of `RANDOM_ENTRY_NAME_LEN`
+      characters. The filename consists of uppercase and lowercase
+      letters and digits.
     */
-    std::vector<VirtualPath> content;
-    VirtualPath is;
+    std::wostringstream randomName;
+    for ([[maybe_unused]] auto _ : range(RANDOM_ENTRY_NAME_LEN))
+      switch (roll_dice(0, 2)) {
+        case 0: randomName << wchar_t(roll_dice('A', 'Z')); break; // Uppercase letter
+        case 1: randomName << wchar_t(roll_dice('a', 'z')); break; // Lowercase letter
+        case 2: randomName << wchar_t(roll_dice('0', '9')); break; // Digit
+      }
+    return randomName.str();
+  }
 
-    Folder() = default;
-    Folder(wstrsv_t where) : is(where, std::filesystem::file_type::directory) {update();}
-    wstr_t wstr() const {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
-      return is.isAt.wstring();
+
+
+  class TempFile : public File { public:
+    /*
+      Create a temporary file with a random name in the system's
+      temporary directory. The name is generated by rolling dice
+      to create a random string of letters and digits.
+      Note:
+        Using a lambda function to ensure constness of the file
+        and to avoid possibly pointing to a file that shouldn't
+        be deleted.
+    */
+    bool keep = false;
+
+    TempFile() {
+      wstr_t tempFileName = L"cslibTempFile_" + scramble_filename() + L".tmp";
+      // Ensure the file does not already exist
+      while (std::filesystem::exists(std::filesystem::temp_directory_path() / tempFileName))
+        tempFileName = L"cslibTempFile_" + scramble_filename() + L".tmp";
+
+      isAt = File(std::filesystem::temp_directory_path() / tempFileName, true).isAt; // Create the file
     }
-    bool has(const VirtualPath& item) const {
-      /*
-        Check if the folder contains the given item.
-        Example:
-          Folder folder("/gitstuff/cslib");
-          VirtualPath item("/gitstuff/cslib/cslib.h++");
-          bool exists = folder.has(item);
-          // exists = true
-      */
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
-      return contains(content, item);
+    TempFile(const std::filesystem::path& _createAs) {
+      if (std::filesystem::exists(_createAs))
+        throw_up("File ", _createAs.filename(), " already exists in folder ", _createAs.parent_path());
+      isAt = File(_createAs, true).isAt; // Create the file
     }
-    bool has(const File& item) const {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
-      return contains(content, item.is);
-    }
-    bool has(const Folder& item) const {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
-      return contains(content, item.is);
-    }
-    void update() {
-      if (is.isAt.empty())
-        throw_up("Uninitialized path for folder at ", to_ptrstr(this));
-      content.clear();
-      for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(is.isAt))
-        content.push_back(VirtualPath(entry.path().wstring()));
-      content.shrink_to_fit();
+    ~TempFile() {
+      if (std::filesystem::exists(isAt) and !keep)
+        std::filesystem::remove(isAt);
     }
   };
+  TempFile& make_runtime_file() {
+    /*
+      Return a reference to a temporary file that is created
+      at runtime. The file is created in a static deque to
+      ensure that it is not deleted until the program exits.
+      Note:
+        Using deque cuz vector reallocation causes the
+        file to be deleted and/or its memory address to
+        change, which would lead to undefined behavior.
+    */
+    static std::deque<TempFile> runtimeFiles;
+    runtimeFiles.emplace_back();
+    return runtimeFiles.back();
+  }
 
 
 
+  class TempFolder : public Folder { public:
+    /*
+      Create a temporary folder with a random name in the system's
+      temporary directory. The name is generated by rolling dice
+      to create a random string of letters and digits.
+      Note:
+        Destructor also takes all files in the folder
+        into account and deletes them.
+    */
+    bool keep = false;
 
-  // Namespaces
-  namespace TinySTL {
-    // The stl is good but sometimes you need something smaller
-
-    template <typename T>
-    class Vector { public:
+    TempFolder() {
+      wstr_t tempFolderName = L"cslibTempFolder_" + scramble_filename();
+      while (std::filesystem::exists(std::filesystem::temp_directory_path() / tempFolderName))
+        tempFolderName = L"cslibTempFolder_" + scramble_filename();
+      isAt = Folder(std::filesystem::temp_directory_path() / tempFolderName, true).isAt;
+    }
+    TempFolder(const std::filesystem::path& _createAs) {
       /*
-        Same as std::vector but smaller and less features.
+        Create a temporary folder in the given path.
         Note:
-          The size and capacity are 4 bytes each, when padding
-          is done, memory-usage isn't doubled.
+          If the folder already exists, it will throw an error.
       */
-
-      T* data;
-      uint32_t size;
-      uint32_t capacity;
-
-      Vector() : data(nullptr), size(0), capacity(0) {}
-      Vector(uint32_t initialCapacity) : size(0), capacity(initialCapacity) {
-        if (initialCapacity == 0)
-          throw_up("Vector capacity must be greater than 0");
-        data = new T[initialCapacity];
-      }
-      Vector(std::initializer_list<T> initList) : size(initList.size()), capacity(initList.size()) {
-        // Copies whatever is in the initializer list
-        if (initList.size() == 0)
-          throw_up("Vector initializer list cannot be empty");
-        data = new T[initList.size()];
-        uint32_t index = 0;
-        for (const T& item : initList)
-          data[index++] = item;
-      }
-      Vector(const std::vector<T>& vec) : size(vec.size()), capacity(vec.capacity()) {
-        // Copies whatever is in the std::vector
-        if (vec.empty())
-          throw_up("Vector cannot be initialized from an empty std::vector");
-        data = new T[vec.size()];
-        uint32_t index = 0;
-        for (const T& item : vec)
-          data[index++] = item;
-      }
-      Vector(const Vector&) = delete; // No copy constructor
-      Vector& operator=(const Vector&) = delete; // No copy assignment operator
-      Vector(Vector&& other) noexcept : data(other.data), size(other.size), capacity(other.capacity) {
-        other.data = nullptr; // Prevent deletion of moved-from data
-        other.size = 0;
-        other.capacity = 0;
-      }
-      Vector& operator=(Vector&& other) noexcept {
-        if (this != &other) {
-          delete[] data;
-          data = other.data;
-          size = other.size;
-          capacity = other.capacity;
-          other.data = nullptr; // Prevent deletion of moved-from data
-          other.size = 0;
-          other.capacity = 0;
-        }
-        return *this;
-      }
-      ~Vector() { delete[] data; }
-
-      T* begin() { return data; }
-      T* end() { return data + size; }
-      void increment_capacity() {
-        T* new_data = new T[++capacity];
-        size = -1;
-        for (T& ownData : *this)
-          new_data[++size] = ownData;
-        delete[] data;
-        data = new_data;
-      }
-      void push_back(T value) {
-        if (size == capacity)
-          increment_capacity();
-        data[++size] = value;
-      }
-      T& operator[](uint32_t index) {
-        if (index >= size)
-          throw_up("Index out of bounds for Vector at ", to_ptrstr(this), ": ", index, " >= ", size);
-        return data[index];
-      }
-      void pop_back() {
-        if (size == 0)
-          throw_up("Cannot pop from an empty vector at ", to_ptrstr(this));
-        --size;
-      }
-    };
-
-
-
-    template <uint8_t N>
-    class String { public:
-      /*
-        Static fixed size string. It can hold up to `N` characters and is
-        only null-terminated when cslib::String's capacity isn't maxed.
-        If it is, the size-limit acts as a terminator.
-        Example:
-          String<2> str("Hi");
-          // str = {'H', 'i'}
-          String<3> str2("Hi");
-          // str2 = {'H', 'i', '\0'}
-          String<4> str3("Hi");
-          // str3 = {'H', 'i', '\0', 'm' ('m' could have been used
-          for something else earlier but ignored after null-termination)}
-      */
-      static_assert(N > 0, "String size must be greater than 0");
-
-      char data[N] = {'\0'};
-
-      String() = default;
-      String(std::string_view str) {
-        for (char c : str)
-          append(c);
-      }
-      template <uint8_t ON> // Other N
-      String(const String<ON>&) = delete;
-      template <uint8_t ON>
-      String& operator=(const String<ON>&) = delete;
-      String(String&& other) noexcept {
-        for (uint8_t i = 0; i < N; ++i)
-          data[i] = other.data[i];
-        other.clear();
-      }
-      String& operator=(String&& other) noexcept {
-        if (this != &other) {
-          for (uint8_t i = 0; i < N; ++i)
-            data[i] = other.data[i];
-          other.clear();
-        }
-        return *this;
-      }
-
-      uint8_t length() {
-        uint8_t size = 0;
-        while (data[size] != '\0' and size < N)
-          ++size;
-        return size;
-      }
-      void append(char c) {
-        uint8_t size = length();
-        if (size >= N)
-          throw_up("String (", to_ptrstr(this), ") capacity exceeded: ", N);
-        data[size] = c;
-        if (size + 1 < N)
-          data[size + 1] = '\0';
-      }
-      void clear() {
-        data = {'\0'};
-      }
-      char& at(uint8_t index) {
-        if (index >= N)
-          throw_up("Index out of bounds for String at ", to_ptrstr(this), ": ", index, " >= ", N);
-        return data[index];
-      }
-      char* begin() {return data;}
-      char* end() {return data + length();}
-      std::string std_str() {
-        std::string str;
-        for (char c : data)
-          str += c;
-        return str;
-      }
-      bool operator==(String other) {
-        return this->std_str() == other.std_str();
-      }
-      bool operator==(std::string_view other) {
-        return this->std_str() == other.data();
-      }
-    };
-    template <uint8_t N>
-    class Wstring { public:
-      /*
-        Same as String but for wide characters.
-        Example:
-          Wstring<2> str(L"Hi");
-          // str = {L'H', L'i'}
-          Wstring<3> str2(L"Hi");
-          // str2 = {L'H', L'i', L'\0'}
-          Wstring<4> str3(L"Hi");
-          // str3 = {L'H', L'i', L'\0', L'm' (L'm' could have been used
-          for something else earlier but ignored after null-termination)}
-      */
-      static_assert(N > 0, "Wstring size must be greater than 0");
-
-      wchar_t data[N] = {L'\0'};
-
-      Wstring() = default;
-      Wstring(std::wstring str) {
-        for (wchar_t c : str)
-          append(c);
-      }
-      template <uint8_t ON> // Other N
-      Wstring(const Wstring<ON>&) = delete;
-      template <uint8_t ON>
-      Wstring& operator=(const Wstring<ON>&) = delete;
-      Wstring(Wstring&& other) noexcept {
-        // Move constructor
-        for (uint8_t i = 0; i < N; ++i)
-          data[i] = other.data[i];
-        other.clear();
-      }
-      Wstring& operator=(Wstring&& other) noexcept {
-        if (this != &other) {
-          for (uint8_t i = 0; i < N; ++i)
-            data[i] = other.data[i];
-          other.clear();
-        }
-        return *this;
-      }
-
-      uint8_t length() {
-        uint8_t size = 0;
-        while (data[size] != L'\0' and size < N)
-          ++size;
-        return size;
-      }
-      void append(wchar_t c) {
-        uint8_t size = length();
-        if (size >= N)
-          throw_up("Wstring (", to_ptrstr(this), ") capacity exceeded: ", N);
-        data[size] = c;
-        if (size + 1 < N)
-          data[size + 1] = L'\0';
-      }
-      void clear() {
-        data = {L'\0'};
-      }
-      wchar_t& at(uint8_t index) {
-        if (index >= N)
-          throw_up("Index out of bounds for Wstring at ", to_ptrstr(this), ": ", index, " >= ", N);
-        return data[index];
-      }
-      wchar_t* begin() {return data;}
-      wchar_t* end() {return data + length();}
-      wstr_t std_str() {
-        wstr_t str;
-        for (wchar_t c : data)
-          str += c;
-        return str;
-      }
-    };
-
-
-    template <typename K, typename V>
-    class Map { public:
-      /*
-        A TinySTL::Vector that holds key-value pairs.
-      */
-      struct Node {
-        K key;
-        V value;
-      };
-
-      Vector<Node> data;
-
-      Map() = default;
-      Map(size_t initialCapacity) : data(initialCapacity) {
-        if (initialCapacity == 0)
-          throw_up("Map capacity must be greater than 0");
-      }
-      Map(const Map&) = delete;
-      Map& operator=(const Map&) = delete;
-      Map(Map&& other) noexcept : data(std::move(other.data)) {
-        other.data = Vector<Node>();
-      }
-      Map& operator=(Map&& other) noexcept {
-        if (this != &other) {
-          data = std::move(other.data);
-          other.data = Vector<Node>();
-        }
-        return *this;
-      }
-
-      void insert(K key, V value) {
-        if (contains(key))
-          throw_up("Key already exists for Map at ", to_ptrstr(this));
-        data.push_back({key, value});
-      }
-      V& at(K key) {
-        for (Node& node : data)
-          if (node.key == key)
-            return node.value;
-        throw_up("Key not found for Map at ", to_ptrstr(this));
-      }
-      V& operator[](K key) {
-        return at(key);
-      }
-      bool contains(K key) const {
-        for (Node node : data)
-          if (node.key == key)
-            return true;
-        return false;
-      }
-      std::pair<K, V>* begin() {
-        return reinterpret_cast<std::pair<K, V>*>(data.begin());
-      }
-      std::pair<K, V>* end() {
-        return reinterpret_cast<std::pair<K, V>*>(data.end());
-      }
-    };
+      if (std::filesystem::exists(_createAs))
+        throw_up("Folder ", _createAs.filename(), " already exists in folder ", _createAs.parent_path());
+      isAt = Folder(_createAs, true).isAt;
+    }
+    ~TempFolder() {
+      if (std::filesystem::exists(isAt) and !keep)
+        std::filesystem::remove_all(isAt);
+    }
   };
+  Folder& make_runtime_folder() {
+    /*
+      Return a reference to a temporary folder that is created
+      at runtime. The folder is created in a static deque to
+      ensure that it is not deleted until the program exits.
+      Note:
+        Same as make_runtime_file, using deque to avoid
+        reallocation issues.
+    */
+    static std::deque<TempFolder> runtimeFolders;
+    runtimeFolders.emplace_back();
+    return runtimeFolders.back();
+  }
 } // namespace cslib

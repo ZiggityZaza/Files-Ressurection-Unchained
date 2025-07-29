@@ -29,6 +29,7 @@ namespace LRZTAR {
   // MACRO DECOMPRESS_CMD_HEAD = "lrztar -d ";
   // MACRO DECOMPRESS_CMD_TAIL = "\"";
   Folder decompress(const File&) = delete;
+  Folder decompress(const Folder&) = delete;
   Folder decompress() = delete;
   // No support for decompression due to excessive complexity
 
@@ -37,9 +38,9 @@ namespace LRZTAR {
   MACRO COMPRESS_CMD_HEAD = "lrztar -z \"";
   MACRO COMPRESS_CMD_TAIL = "\""; // Keep it a string literal, so it can be concatenated with the path
   MACRO EXPECTED_EXTENSION = L".tar.lrz";
-  std::wostream& out = std::wcout;
-  const Folder EXCHANGE_FOLDER(L"/root/shared"); // Grab targets from (immutable)
-  Folder BACKUP_FOLDER(L"/root/archive"); // Put compressed files in here
+  const Out out = Out(std::wcout, L"[FRU]:", Magenta);
+  const Folder EXCHANGE_FOLDER(L"/root/fru_shared"); // Grab targets from (immutable)
+  Folder BACKUP_FOLDER(L"/root/fru_archive"); // Put compressed files in here
   Folder WORKING_DIR(std::filesystem::current_path().wstring());
 
 
@@ -60,8 +61,7 @@ namespace LRZTAR {
       throw_up("Target folder '", toBeCompressed.wstr(), "' is already in the working directory '", WORKING_DIR.wstr(), "'");
 
     out << "Copying folder '" << toBeCompressed.wstr() << "' to working directory '" << WORKING_DIR.wstr() << "'";
-    Folder copyOfToBeCompressed(toBeCompressed.is.copy_into(WORKING_DIR.is).wstr());
-    WORKING_DIR.update();
+    Folder copyOfToBeCompressed = toBeCompressed.copy_self_into(WORKING_DIR);
     out << "Copied folder '" << toBeCompressed.wstr() << "' to working directory '" << WORKING_DIR.wstr() << "'\n";
     if (!WORKING_DIR.has(copyOfToBeCompressed))
       throw_up("Failed to copy folder '", toBeCompressed.wstr(), "' to working directory '", WORKING_DIR.wstr(), "'");
@@ -83,9 +83,8 @@ namespace LRZTAR {
     if (BACKUP_FOLDER.has(compressedFile))
       throw_up("Compressed file '", compressedFile.wstr(), "' is already in the backup folder '", BACKUP_FOLDER.wstr(), "'");
 
-    compressedFile.is.move_to(BACKUP_FOLDER.is);
-    BACKUP_FOLDER.update();
-    if (!BACKUP_FOLDER.has(compressedFile.is))
+    compressedFile.move_self_into(BACKUP_FOLDER);
+    if (!BACKUP_FOLDER.has(compressedFile))
       throw_up("Failed to move compressed file '", compressedFile.wstr(), "' to backup folder '", BACKUP_FOLDER.wstr(), "'");
     out << L"Archived compressed file '" << compressedFile.wstr() << L"' to '" << BACKUP_FOLDER.wstr() << L"'";
   }
@@ -117,14 +116,13 @@ namespace LRZTAR {
     if (!WORKING_DIR.has(toBeCompressed))
       throw_up("Folder '", toBeCompressed.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
     
-    wstr_t willBecome = toBeCompressed.is.isAt.wstring() + EXPECTED_EXTENSION;
+    wstr_t willBecome = toBeCompressed.wstr() + EXPECTED_EXTENSION;
     if (std::filesystem::exists(willBecome))
       throw_up("Compressed file '", willBecome, "' already exists in the working directory '", WORKING_DIR.wstr(), "'");
 
     out << "Compressing folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'";
     sh_call(COMPRESS_CMD_HEAD + to_str(toBeCompressed.wstr()) + COMPRESS_CMD_TAIL);
     out << "Compressed folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'\n";
-    WORKING_DIR.update();
     File willBecomeFile(willBecome);
     if (!WORKING_DIR.has(willBecomeFile))
       throw_up("Failed to compress folder '", toBeCompressed.wstr(), "' to '", willBecome, "'");
@@ -164,8 +162,8 @@ namespace LRZTAR {
         // Hibernates the program until the next run
     */
     out << "Going back to sleep...\n";
-    uint currentMonth = TimeStamp().get_month();
-    uint targetYear = TimeStamp().get_year();
+    uint currentMonth = TimeStamp().month();
+    uint targetYear = TimeStamp().year();
     uint nextMonth = currentMonth + 1;
     if (nextMonth > 12) {
       nextMonth = 1;
@@ -179,8 +177,8 @@ namespace LRZTAR {
       nextMonth,
       targetYear
     );
-    out << "Next run will be on " << nextRun.asWstr() << "\n";
+    out << "Next run will be on " << nextRun.as_wstr() << "\n";
     // Hibernate the program until the next run
-    cslib::sleep_until(nextRun);
+    std::this_thread::sleep_until(nextRun.timePoint);
   }
 };
