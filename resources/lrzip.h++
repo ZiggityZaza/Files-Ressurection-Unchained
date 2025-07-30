@@ -45,9 +45,23 @@ namespace LRZTAR {
 
 
 
+  std::vector<Folder> get_all_folders_in_exchange() {
+    /*
+      Step 1: Get all folders in the exchange folder
+    */
+    std::vector<Folder> folders;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(EXCHANGE_FOLDER.wstr())) {
+      if (!entry.is_directory())
+        throw_up("Entry ", entry.path().wstring(), " in exchange folder is not a directory");
+      folders.push_back(Folder(entry.path().wstring()));
+    }
+    return folders;
+  }
+
+
   Folder carry_here(const Folder& toBeCompressed) {
     /*
-      Copy the folder that is supposed to be
+      Step 2: Copy the folder that is supposed to be
       handled by this program to this directory
       Note:
         Target MUST be in the Exchange Folder
@@ -69,10 +83,35 @@ namespace LRZTAR {
   }
 
 
+  File compress(const Folder& toBeCompressed) {
+    /*
+      Step 3: Compress the folder and return
+      the compressed .tar.lrz file
+      Example:
+        File compressedFile = compress(Folder(L"./docs"));
+        // Compressed file is "./docs.tar.lrz"
+    */
+    if (!WORKING_DIR.has(toBeCompressed))
+      throw_up("Folder '", toBeCompressed.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
+    
+    wstr_t willBecome = toBeCompressed.wstr() + EXPECTED_EXTENSION;
+    if (std::filesystem::exists(willBecome))
+      throw_up("Compressed file '", willBecome, "' already exists in the working directory '", WORKING_DIR.wstr(), "'");
+
+    out << "Compressing folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'";
+    sh_call(COMPRESS_CMD_HEAD + to_str(toBeCompressed.wstr()) + COMPRESS_CMD_TAIL);
+    out << "Compressed folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'\n";
+    File willBecomeFile(willBecome);
+    if (!WORKING_DIR.has(willBecomeFile))
+      throw_up("Failed to compress folder '", toBeCompressed.wstr(), "' to '", willBecome, "'");
+    return willBecomeFile;
+  }
+
+
   void archive(File& compressedFile) {
     /*
-      Move the compressed file to the backup
-      folder
+      Step 4: Move the compressed file
+      to the backup folder
       Example:
         File compressedFile(L"./docs.tar.lrz");
         archive(compressedFile);
@@ -103,30 +142,6 @@ namespace LRZTAR {
     
     out << "Content of '" << compressedFile.wstr() << "':\n";
     sh_call(LRZCAT_CMD_HEAD + to_str(compressedFile.wstr()) + LRZCAT_CMD_TAIL);
-  }
-
-
-  File compress(const Folder& toBeCompressed) {
-    /*
-      Compress the folder and return the compressed file
-      Example:
-        File compressedFile = compress(Folder(L"./docs"));
-        // Compressed file is "./docs.tar.lrz"
-    */
-    if (!WORKING_DIR.has(toBeCompressed))
-      throw_up("Folder '", toBeCompressed.wstr(), "' isn't in the working directory '", WORKING_DIR.wstr(), "'");
-    
-    wstr_t willBecome = toBeCompressed.wstr() + EXPECTED_EXTENSION;
-    if (std::filesystem::exists(willBecome))
-      throw_up("Compressed file '", willBecome, "' already exists in the working directory '", WORKING_DIR.wstr(), "'");
-
-    out << "Compressing folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'";
-    sh_call(COMPRESS_CMD_HEAD + to_str(toBeCompressed.wstr()) + COMPRESS_CMD_TAIL);
-    out << "Compressed folder '" << toBeCompressed.wstr() << "' to '" << willBecome << "'\n";
-    File willBecomeFile(willBecome);
-    if (!WORKING_DIR.has(willBecomeFile))
-      throw_up("Failed to compress folder '", toBeCompressed.wstr(), "' to '", willBecome, "'");
-    return willBecomeFile;
   }
 
 

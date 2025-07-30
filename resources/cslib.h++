@@ -623,6 +623,20 @@ namespace cslib {
       */
       return separate(isAt.wstring(), std::filesystem::path::preferred_separator).size() - 1;
     }
+    void rename_self_to(wstrv_t _newName) {
+      /*
+        Rename the entry to a new name.
+        Note:
+          The new name must not contain any path separators.
+      */
+      if (_newName.find(std::filesystem::path::preferred_separator) != std::wstring::npos)
+        throw_up("New name '", _newName, "' contains path separator");
+      std::filesystem::path newPath = isAt.parent_path() / _newName;
+      if (std::filesystem::exists(newPath))
+        throw_up("Path ", newPath, " already exists");
+      std::filesystem::rename(isAt, newPath);
+      isAt = newPath; // Update the path
+    }
 
     bool operator==(const FSEntry& _other) const { return this->isAt == _other.isAt; }
     bool operator!=(const FSEntry& _other) const { return !(*this == _other); }
