@@ -50,8 +50,6 @@ namespace LRZTAR {
 
 
 
-  // MACRO DECOMPRESS_CMD_HEAD = "lrztar -d ";
-  // MACRO DECOMPRESS_CMD_TAIL = "\"";
   Folder decompress(const File&) = delete;
   Folder decompress(const Folder&) = delete;
   Folder decompress() = delete;
@@ -60,10 +58,10 @@ namespace LRZTAR {
   MACRO LRZCAT_CMD_HEAD = "lrzcat \"";
   MACRO LRZCAT_CMD_TAIL = "\" | tar -tv";
   MACRO COMPRESS_CMD_HEAD = "lrztar -z \"";
-  MACRO COMPRESS_CMD_TAIL = "\""; // Keep it a string literal, so it can be concatenated with the path
+  MACRO COMPRESS_CMD_TAIL = "\"";
   MACRO EXPECTED_EXTENSION = ".tar.lrz";
   // Out out = Out(std::cout, "[FRU]:", Magenta);
-  Out make_out(strv_t funcName) {
+  Out make_out(str_t funcName) {
     const char* color;
     switch (roll_dice(0, 5)) {
       case 0: color = Red; break;
@@ -74,21 +72,31 @@ namespace LRZTAR {
       case 5: color = Cyan; break;
       default: throw_up("Unkown color");
     }
-    return Out(std::cout, "[FRU " + to_str(funcName) + "]:", color);
+    return Out(std::cout, "[FRU " + funcName + "]:", color);
   }
   const Folder EXCHANGE_FOLDER("/root/fru_shared"); // Grab targets from (immutable)
-  Folder BACKUP_FOLDER("/root/fru_archive"); // Put compressed files in here
-  Folder WORKING_DIR(std::filesystem::current_path().wstring());
+  // Folder BACKUP_FOLDER("/root/fru_archive"); // Put compressed files in here
+  TempFolder BACKUP_FOLDER; // Debugging alternative to above clean itself up
+  Folder WORKING_DIR(std::filesystem::current_path());
+
+
+
+
+  std::map<str_t, Folder> existing_backup_groups() {
+    std::map<str_t, Folder> backups;
+    for (const Road& _entry : BACKUP_FOLDER.list())
+      if (!backups.insert({_entry.name(), Folder(_entry)}).second)
+        throw_up("Duplicate backup group found: ", _entry.name());
+    return backups;
+  }
 
 
 
   std::vector<Folder> get_all_folders_in_exchange() {
-    Out out = make_out(__func__);
+    Out out = make_out(__PRETTY_FUNCTION__);
     std::vector<Folder> folders;
-    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(EXCHANGE_FOLDER.wstr())) {
-      if (!entry.is_directory())
-        throw_up("Entry ", entry.path().wstring(), " in exchange folder is not a directory");
-      folders.push_back(Folder(entry.path()));
+    for (const Road& entry : EXCHANGE_FOLDER.list()) {
+      folders.emplace_back(entry); // Implicit error handling
       out << "Found folder " << folders.back() << " in exchange folder " << EXCHANGE_FOLDER << '\n';
     }
     out << "Total of " << folders.size() << " folders found in exchange folder " << EXCHANGE_FOLDER << '\n';

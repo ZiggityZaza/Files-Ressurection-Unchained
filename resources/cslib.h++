@@ -648,8 +648,9 @@ namespace cslib {
           cslib_throw_up("Failed to create folder ", _where);
       } else if (!std::filesystem::is_directory(_where))
         cslib_throw_up("Path ", _where, " is not a directory");
-      isAt = std::filesystem::canonical(_where);
+      isAt = std::filesystem::canonical(_where);    
     }
+    Folder(const Road& _where, bool _createIfNotExists) : Folder(_where.isAt, _createIfNotExists) {}
 
 
     std::vector<Road> list() const {
@@ -708,6 +709,7 @@ namespace cslib {
         cslib_throw_up("Path ", _where, " is not a regular file");
       isAt = std::filesystem::canonical(_where);
     }
+    File(const Road& _where, bool _createIfNotExists) : File(_where.isAt, _createIfNotExists) {}
 
 
     std::ifstream reach_in(std::ios::openmode mode) const {
@@ -917,4 +919,18 @@ namespace cslib {
     else
       cslib_throw_up("Unsupported type for lowest_value_of");
   }
+
+
+
+  template <typename ExpectedType>
+  FIXED ExpectedType& grab_var(const auto& _variant) {
+    if (!std::holds_alternative<ExpectedType>(_variant))
+      throw_up("Expected variant type ", typeid(ExpectedType).name(), " but got ", _variant.index());
+    return std::get<ExpectedType>(_variant);
+  }
+
+
+
+  template <typename T>
+  
 } // namespace cslib
