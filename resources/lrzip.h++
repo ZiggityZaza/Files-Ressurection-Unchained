@@ -26,19 +26,56 @@ namespace LRZTAR {
       as the binary and the compressed file
   */
 
+  class fru_error : public std::runtime_error { public:
+    /*
+      Custom error class for LRZTAR
+      Example:
+        throw LRZTAR::fru_error("Something went wrong");
+    */
+    fru_error(size_t _lineInCode, const auto&... _msgs) : std::runtime_error([_lineInCode, &_msgs...] {
+      /*
+        Create a custom error message with the given messages.
+        Example:
+          throw cslib::any_error(__LINE__, "Aye", L"yo", '!', 123, true);
+      */
+      std::ostringstream oss;
+      oss << "LRZTAR::fru_error called in workspace " << std::filesystem::current_path();
+      oss << " on line " << _lineInCode << " because: ";
+      ((oss << to_str(std::forward<decltype(_msgs)>(_msgs))), ...);
+      oss << std::flush;
+      return oss.str();
+    }()) {}
+  };
+  #define throw_up(...) throw LRZTAR::fru_error(__LINE__, __VA_ARGS__)
+
+
+
   // MACRO DECOMPRESS_CMD_HEAD = "lrztar -d ";
   // MACRO DECOMPRESS_CMD_TAIL = "\"";
   Folder decompress(const File&) = delete;
   Folder decompress(const Folder&) = delete;
   Folder decompress() = delete;
-  // No support for decompression due to excessive complexity
+  // No support for decompression yet due to excessive complexity
 
   MACRO LRZCAT_CMD_HEAD = "lrzcat \"";
   MACRO LRZCAT_CMD_TAIL = "\" | tar -tv";
   MACRO COMPRESS_CMD_HEAD = "lrztar -z \"";
   MACRO COMPRESS_CMD_TAIL = "\""; // Keep it a string literal, so it can be concatenated with the path
   MACRO EXPECTED_EXTENSION = ".tar.lrz";
-  const Out out = Out(std::cout, "[FRU]:", Magenta);
+  // Out out = Out(std::cout, "[FRU]:", Magenta);
+  Out make_out(strv_t funcName) {
+    const char* color;
+    switch (roll_dice(0, 5)) {
+      case 0: color = Red; break;
+      case 1: color = Green; break;
+      case 2: color = Yellow; break;
+      case 3: color = Blue; break;
+      case 4: color = Magenta; break;
+      case 5: color = Cyan; break;
+      default: throw_up("Unkown color");
+    }
+    return Out(std::cout, "[FRU " + to_str(funcName) + "]:", color);
+  }
   const Folder EXCHANGE_FOLDER("/root/fru_shared"); // Grab targets from (immutable)
   Folder BACKUP_FOLDER("/root/fru_archive"); // Put compressed files in here
   Folder WORKING_DIR(std::filesystem::current_path().wstring());
@@ -46,6 +83,7 @@ namespace LRZTAR {
 
 
   std::vector<Folder> get_all_folders_in_exchange() {
+    Out out = make_out(__func__);
     std::vector<Folder> folders;
     for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(EXCHANGE_FOLDER.wstr())) {
       if (!entry.is_directory())
@@ -68,6 +106,7 @@ namespace LRZTAR {
         carry_copy_in_here(Folder(L"/root/shared/docs"));
         // Copies the folder "docs" to "/root/shared"
     */
+    Out out = make_out(__func__);
     if (!EXCHANGE_FOLDER.has(toBeCompressed))
       throw_up("Target folder ", toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER); 
     if (WORKING_DIR.has(toBeCompressed))
@@ -82,7 +121,7 @@ namespace LRZTAR {
   }
 
 
-  File compress(const Folder& toBeCompressed) {
+  File compress(Folder& toBeCompressed) {
     /*
       Compress the folder and return the compressed
       .tar.lrz file
@@ -90,6 +129,8 @@ namespace LRZTAR {
         File compressedFile = compress(Folder(L"./docs"));
         // Compressed file is "./docs.tar.lrz"
     */
+    Out out = make_out(__func__);
+
     if (!WORKING_DIR.has(toBeCompressed))
       throw_up("Folder ", toBeCompressed, " isn't in the working directory ", WORKING_DIR);
 
@@ -98,11 +139,12 @@ namespace LRZTAR {
       throw_up("Compressed file ", willBecome, " already exists in the working directory ", WORKING_DIR);
 
     out << "Compressing folder " << toBeCompressed << " to " << willBecome << '\n';
-    sh_call(COMPRESS_CMD_HEAD + to_str(toBeCompressed.wstr()) + COMPRESS_CMD_TAIL);
+    sh_call(COMPRESS_CMD_HEAD + toBeCompressed.str() + COMPRESS_CMD_TAIL);
     out << "Compressed folder " << toBeCompressed << " to " << willBecome << '\n';
     File willBecomeFile(willBecome);
     if (!WORKING_DIR.has(willBecomeFile))
       throw_up("Failed to compress folder ", toBeCompressed, " to ", willBecome, " in working directory ", WORKING_DIR);
+    std::filesystem::remove_all(toBeCompressed); // Remove the copy
     return willBecomeFile;
   }
 
@@ -115,11 +157,14 @@ namespace LRZTAR {
         archive(compressedFile);
         // Moves the file to "/root/archive/docs.tar.lrz"
     */
+    Out out = make_out(__func__);
+
     if (!WORKING_DIR.has(compressedFile))
       throw_up("Compressed file ", compressedFile, " isn't in the working directory ", WORKING_DIR);
     if (BACKUP_FOLDER.has(compressedFile))
       throw_up("Compressed file ", compressedFile, " is already in the backup folder ", BACKUP_FOLDER);
 
+    compressedFile.rename_self_to(compressedFile.name() + "@" + TimeStamp().as_str());
     compressedFile.move_self_into(BACKUP_FOLDER);
     if (!BACKUP_FOLDER.has(compressedFile))
       throw_up("Failed to move compressed file ", compressedFile, " to backup folder ", BACKUP_FOLDER);
@@ -137,6 +182,8 @@ namespace LRZTAR {
       Note:
         Takes care of moving, compressing and archiving
     */
+    Out out = make_out(__func__);
+
     out << "Pulling folder " << toBeCompressed << " from exchange folder " << EXCHANGE_FOLDER << '\n';
     Folder copyOfToBeCompressed = carry_copy_in_here(toBeCompressed);
     File compressedFile = compress(copyOfToBeCompressed);
@@ -160,6 +207,8 @@ namespace LRZTAR {
         go_back_to_sleep();
         // Hibernates the program until the next run
     */
+    Out out = make_out(__func__);
+
     out << "Going back to sleep...\n";
     uint currentMonth = TimeStamp().month();
     uint targetYear = TimeStamp().year();

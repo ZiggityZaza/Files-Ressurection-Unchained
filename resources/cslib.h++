@@ -58,7 +58,7 @@ namespace cslib {
   // Jack of all trades (Helper functions and classes)
 
   // Other
-  using csstr = const char *const; // C-style string
+  using cstr = const char *const; // C-style string
   using str_t = std::string;
   using strv_t = std::string_view;
   using byte_t = char;
@@ -77,7 +77,7 @@ namespace cslib {
   // Defined beforehand to avoid circular dependencies
   MACRO to_str(wchar_t _wchar) {
     if (_wchar > 0xFF) // If the character is not representable in a single byte
-      throw std::runtime_error("to_str(wchar_t) cannot convert wide character to narrow string");
+      throw std::runtime_error("Can't convert wide character to narrow ones");
     return std::string(1, static_cast<char>(_wchar));
   }
   MACRO to_str(cptr<wchar_t> _cwstr) {
@@ -87,11 +87,11 @@ namespace cslib {
       ++len;
     for (size_t i = 0; i < len; ++i)
       if (_cwstr[i] > 0xFF) // If the character is not representable in a single byte
-        throw std::runtime_error("to_str(const wchar_t *const) cannot convert wide string to narrow string");
+        throw std::runtime_error("Can't convert wide string to narrow string");
     return std::string(_cwstr, _cwstr + len);
   }
-  MACRO to_str(const std::wstring& _wstr) {return std::string(_wstr.begin(), _wstr.end());}
-  MACRO to_str(std::wstring_view _wstrv) {return std::string(_wstrv.begin(), _wstrv.end());}
+  MACRO to_str(std::wstring_view _wstrv) {return to_str(_wstrv.data());}
+  MACRO to_str(const std::wstring& _wstr) { return to_str(_wstr.data()); }
   str_t to_str(const auto& _anything) {
     std::ostringstream oss;
     oss << _anything;
@@ -99,7 +99,7 @@ namespace cslib {
   }
 
   MACRO to_wstr(char _char) { return std::wstring(1, static_cast<wchar_t>(_char)); }
-  MACRO to_wstr(csstr _cstr) {return std::wstring(_cstr, _cstr + std::strlen(_cstr));}
+  MACRO to_wstr(cstr _cstr) {return std::wstring(_cstr, _cstr + std::strlen(_cstr));}
   MACRO to_wstr(const str_t& _str) {return std::wstring(_str.begin(), _str.end());}
   MACRO to_wstr(strv_t _strv) {return std::wstring(_strv.begin(), _strv.end());}
   std::wstring to_wstr(const auto& _anything) {
@@ -139,7 +139,7 @@ namespace cslib {
       return woss.str();
     }()) {}
   };
-  #define throw_up(...) throw cslib::any_error(__LINE__, __VA_ARGS__)
+  #define cslib_throw_up(...) throw cslib::any_error(__LINE__, __VA_ARGS__)
 
 
 
@@ -149,12 +149,26 @@ namespace cslib {
 
 
 
-  void sh_call(strv_t _command) {
+  str_t sh_call(strv_t _command) {
     /*
-      Blocking system call
+      Non-blocking system call that returns the
+      output of the command. Throws if the command
+      does not exist or fails to execute.
+      Important Note:
+        This method is VERY prone to injections
     */
-    if (system(_command.data()) != 0)  
-      throw_up("Failed to execute command: '", _command, "'");
+    std::array<char, 128> buffer = {};
+    str_t result;
+    int exitCode = 0;
+    FILE* pipe = popen(_command.data(), "r");
+    if (!pipe)
+      cslib_throw_up("Failed to open pipe");
+    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr)
+      result += buffer.data();
+    exitCode = pclose(pipe);
+    if (exitCode != 0)
+      cslib_throw_up("Command failed or not found: '", _command, "' (exit code ", exitCode, ")");
+    return result;
   }
 
 
@@ -198,9 +212,9 @@ namespace cslib {
     /*
       Get the value of an environment variable.
     */
-    const char *const envCStr = getenv(_var.data());
+    cstr envCStr = getenv(_var.data());
     if (envCStr == NULL)
-      throw_up("Environment variable '", _var, "' not found");
+      cslib_throw_up("Environment variable '", _var, "' not found");
     return str_t(envCStr);
   }
 
@@ -229,6 +243,10 @@ namespace cslib {
   std::vector<T> range(const T& end) {
     return range(T(0), end);
   }
+  template <typename T>
+  std::vector<T> range(cptr<T> _begin, size_t _count) {
+    return std::vector<T>(_begin, _begin + _count);
+  }
 
 
 
@@ -249,16 +267,16 @@ namespace cslib {
       }
       catch (const std::exception& e) {
         if (_maxAttempts == 0)
-          throw_up("Function failed after maximum attempts: ", e.what());
+          cslib_throw_up("Function failed after maximum attempts: ", e.what());
         std::this_thread::sleep_for(std::chrono::milliseconds(_waitTimeMs)); // Wait before retrying
       }
     }
-    throw_up("Function failed after maximum attempts");
+    cslib_throw_up("Function failed after maximum attempts");
   }
 
 
 
-  std::vector<strv_t> parse_cli_args(int _argc, csstr _args[]) {
+  std::vector<strv_t> parse_cli_args(int _argc, cstr _args[]) {
     /*
       Parse command line arguments and return them as a
       vector of strings.
@@ -266,7 +284,7 @@ namespace cslib {
         The first argument is the program name, so we skip it
     */
     if (_args == nullptr or _argc <= 0)
-      throw_up("No command line arguments provided");
+      cslib_throw_up("No command line arguments provided");
     std::vector<strv_t> args(_args, _args + _argc); // Includes binary name
     args.erase(args.begin()); // Remove the first argument (program name)
     return args;
@@ -300,7 +318,7 @@ namespace cslib {
         cslib::shorten_end(L"cslib.h++", 6); // "csl..."
     */
     if (_maxLength < strlen(TRIM_WITH))
-      throw_up("maxLength must be at least ", strlen(TRIM_WITH), " (TRIM_WITH length)");
+      cslib_throw_up("maxLength must be at least ", strlen(TRIM_WITH), " (TRIM_WITH length)");
     if (_strsv.length() <= _maxLength)
       return str_t(_strsv);
     return str_t(_strsv.substr(0, _maxLength - strlen(TRIM_WITH))) + TRIM_WITH;
@@ -312,7 +330,7 @@ namespace cslib {
         cslib::shorten_begin(L"cslib.h++", 6); // "...h++"
     */
     if (_maxLength < strlen(TRIM_WITH))
-      throw_up("maxLength must be at least ", strlen(TRIM_WITH), " (TRIM_WITH length)");
+      cslib_throw_up("maxLength must be at least ", strlen(TRIM_WITH), " (TRIM_WITH length)");
     if (_strsv.length() <= _maxLength)
       return str_t(_strsv);
     return str_t(TRIM_WITH) + str_t(_strsv.substr(_strsv.length() - (_maxLength - strlen(TRIM_WITH))));
@@ -366,15 +384,15 @@ namespace cslib {
         by the caller. This function only cleans up its own changes.
     */
     if (!_inStream or !_inStream.good())
-      throw_up("std::istream is not good or in a bad state");
+      cslib_throw_up("std::istream is not good or in a bad state");
     std::streampos previousPos = _inStream.tellg();
     str_t result{std::istreambuf_iterator<char>(_inStream), std::istreambuf_iterator<char>()};
     _inStream.seekg(previousPos);
     return result;
   }
   void do_io(std::istream& _inStream, std::ostream& _outStream) {
-      _outStream << read_data(_inStream) << std::flush;
-    }
+    _outStream << read_data(_inStream) << std::flush;
+  }
 
 
 
@@ -400,10 +418,10 @@ namespace cslib {
         std::chrono::day(_day)
       };
       if (!ymd.ok())
-        throw_up("Invalid date: ", _day, "-", _month, "-", _year);
+        cslib_throw_up("Invalid date: ", _day, "-", _month, "-", _year);
       // Determine time
       if (_hour >= 24 or _min >= 60 or _sec >= 60)
-        throw_up("Invalid time: ", _hour, ":", _min, ":", _sec);
+        cslib_throw_up("Invalid time: ", _hour, ":", _min, ":", _sec);
       std::chrono::hh_mm_ss hms{
         std::chrono::hours(_hour) +
         std::chrono::minutes(_min) +
@@ -570,11 +588,11 @@ namespace cslib {
         Note:
           The new name must not contain any path separators.
       */
-      if (_newName.find(std::filesystem::path::preferred_separator) != std::wstring::npos)
-        throw_up("New name '", _newName, "' contains path separators");
+      if (_newName.find(std::filesystem::path::preferred_separator) != std::string::npos)
+        cslib_throw_up("New name '", _newName, "' contains path separators");
       std::filesystem::path newPath = isAt.parent_path() / _newName;
       if (std::filesystem::exists(newPath))
-        throw_up("Path ", newPath, " already exists");
+        cslib_throw_up("Path ", newPath, " already exists");
       std::filesystem::rename(isAt, newPath);
       isAt = newPath; // Update the path
     }
@@ -603,12 +621,14 @@ namespace cslib {
     Road(const std::filesystem::path& _where) : isAt(std::filesystem::canonical(_where)) {}
     Road(const std::filesystem::path& _where, std::filesystem::file_type _type) : isAt(_where) {
     if (_type != this->type())
-      throw_up("Road ", _where, " initialized with unexpected file type");
+      cslib_throw_up("Road ", _where, " initialized with unexpected file type");
     }
   };
 
 
 
+
+  class File;
   class Folder : public Road { public:
     /*
       Child class of Path that represents a folder.
@@ -621,13 +641,13 @@ namespace cslib {
     Folder() = default;
     Folder(const std::filesystem::path& _where, bool _createIfNotExists = false) {
       if (_where.empty())
-        throw_up("Path empty");
+        cslib_throw_up("Path empty");
       if (_createIfNotExists and !std::filesystem::exists(_where)) {
         std::filesystem::create_directory(_where);
         if (!std::filesystem::exists(_where))
-          throw_up("Failed to create folder ", _where);
+          cslib_throw_up("Failed to create folder ", _where);
       } else if (!std::filesystem::is_directory(_where))
-        throw_up("Path ", _where, " is not a directory");
+        cslib_throw_up("Path ", _where, " is not a directory");
       isAt = std::filesystem::canonical(_where);
     }
 
@@ -642,6 +662,7 @@ namespace cslib {
         entries.emplace_back(Road(entry.path()));
       return entries;
     }
+    std::vector<std::variant<File, Folder, Road>> typed_list() const;
     bool has(const Road& _item) const {
       return contains(list(), _item);
     }
@@ -654,7 +675,7 @@ namespace cslib {
           will still point to the old location.
       */
       if (std::filesystem::exists(_newLocation.isAt / isAt.filename()))
-        throw_up("Path ", isAt, " already exists in folder ", _newLocation.isAt);
+        cslib_throw_up("Path ", isAt, " already exists in folder ", _newLocation.isAt);
       std::filesystem::rename(isAt, _newLocation.isAt / isAt.filename());
       isAt = _newLocation.isAt / isAt.filename();
     }
@@ -680,11 +701,11 @@ namespace cslib {
     File() = default;
     File(const std::filesystem::path& _where, bool _createIfNotExists = false) {
       if (_where.empty())
-        throw_up("Path empty");
+        cslib_throw_up("Path empty");
       if (_createIfNotExists and !std::filesystem::exists(_where))
         std::ofstream file(_where);
       if (!std::filesystem::is_regular_file(_where))
-        throw_up("Path ", _where, " is not a regular file");
+        cslib_throw_up("Path ", _where, " is not a regular file");
       isAt = std::filesystem::canonical(_where);
     }
 
@@ -692,13 +713,13 @@ namespace cslib {
     std::ifstream reach_in(std::ios::openmode mode) const {
       std::ifstream file(isAt, mode);
       if (!file.is_open() or !file.good())
-        throw_up("Failed to open file ", isAt);
+        cslib_throw_up("Failed to open file ", isAt);
       return std::move(file);
     }
     std::ofstream reach_out(std::ios::openmode mode) const {
       std::ofstream file(isAt, mode);
       if (!file.is_open() or !file.good())
-        throw_up("Failed to open file ", isAt);
+        cslib_throw_up("Failed to open file ", isAt);
       return std::move(file);
     }
 
@@ -706,15 +727,12 @@ namespace cslib {
       std::ifstream file(reach_in(std::ios::in));
       return str_t((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     }
-    void edit_text(const auto& content) const {
-      reach_out(std::ios::out | std::ios::trunc) << content;
-    }
-    void add_text(const auto& content) const {
-      reach_out(std::ios::out | std::ios::app) << content;
+    void edit_text(const auto& _newText) const {
+      reach_out(std::ios::out) << _newText;
     }
 
 
-    std::vector<byte_t> read_data() const {
+    std::vector<byte_t> read_binary() const {
       /*
         Streambufs for byte-by-byte reading
         for raw data reading.
@@ -725,48 +743,36 @@ namespace cslib {
         std::istreambuf_iterator<byte_t>()
       };
     }
-    void edit_binary_data(const std::vector<char>& _data) const {
+    void edit_binary(const auto *const _newData, size_t _len) const {
       std::ofstream file(reach_out(std::ios::binary | std::ios::trunc));
-      file.write(_data.data(), _data.size());
+      file.write(reinterpret_cast<const char *const>(_newData), _len);
       if (!file.good())
-        throw_up("Failed to write into file ", isAt);
-    }
-    void add_binary_data(const std::vector<char>& _data) const {
-      std::ofstream file(reach_out(std::ios::binary | std::ios::app));
-      file.write(_data.data(), _data.size());
-      if (!file.good())
-        throw_up("Failed to write into file ", isAt);
+        cslib_throw_up("Failed to write into file ", isAt);
     }
 
-    std::wstring extension() const {return isAt.extension().wstring();}
+    std::string extension() const {return isAt.extension().string();}
     size_t bytes() const {return std::filesystem::file_size(isAt);}
 
 
     void move_self_into(Folder& _newLocation) {
-      if (std::filesystem::exists(_newLocation.isAt / isAt.filename()))
-        throw_up("Path ", isAt, " already exists in folder ", _newLocation.isAt);
-      std::filesystem::rename(isAt, _newLocation.isAt / isAt.filename());
-      isAt = _newLocation.isAt / isAt.filename(); // Update the path
+      if (std::filesystem::exists(_newLocation / isAt.filename()))
+        cslib_throw_up("Path ", isAt, " already exists in folder ", _newLocation.isAt);
+      std::filesystem::rename(isAt, _newLocation / isAt.filename());
+      isAt = _newLocation / isAt.filename(); // Update the path
     }
 
 
     File copy_self_into(Folder& _newLocation, std::filesystem::copy_options _options = std::filesystem::copy_options::none) const {
-      std::filesystem::copy(isAt, _newLocation.isAt / isAt.filename(), _options);
-      return File(_newLocation.isAt / isAt.filename());
+      std::filesystem::copy(isAt, _newLocation / isAt.filename(), _options);
+      return File(_newLocation / isAt.filename());
     }
   };
 
 
 
-  std::vector<std::variant<File, Folder, Road>> deduct_list_items(const std::vector<Road>& _list) {
-    /*
-      Deduct the types of paths in the list.
-      Note:
-        Defined after the class declarations
-        to ensure all types are known.
-    */
+  std::vector<std::variant<File, Folder, Road>> Folder::typed_list() const {
     std::vector<std::variant<File, Folder, Road>> result;
-    for (const Road& entry : _list)
+    for (const Road& entry : this->list())
       if (entry.type() == std::filesystem::file_type::regular)
         result.emplace_back(File(entry));
       else if (entry.type() == std::filesystem::file_type::directory)
@@ -778,15 +784,15 @@ namespace cslib {
 
 
 
-  MACRO RANDOM_ENTRY_NAME_LEN = 2; // n^59 possible combinations
+  MACRO SCRAMBLE_LEN = 2; // n^59 possible combinations hehe
   str_t scramble_filename() {
     /*
-      Generate a random filename with a length of `RANDOM_ENTRY_NAME_LEN`
+      Generate a random filename with a length of `SCRAMBLE_LEN`
       characters. The filename consists of uppercase and lowercase
       letters and digits.
     */
     std::ostringstream randomName;
-    for ([[maybe_unused]] auto _ : range(RANDOM_ENTRY_NAME_LEN))
+    for ([[maybe_unused]] auto _ : range(SCRAMBLE_LEN))
       switch (roll_dice(0, 2)) {
         case 0: randomName << roll_dice('A', 'Z'); break; // Uppercase letter
         case 1: randomName << roll_dice('a', 'z'); break; // Lowercase letter
@@ -805,7 +811,7 @@ namespace cslib {
       to create a random string of letters and digits.
     */
     TempFile() {
-      str_t tempFileName = "cslibTempFile_" + scramble_filename() + ".tmp";
+      str_t tempFileName;
       // Ensure the file does not already exist
       do {
         tempFileName = "cslibTempFile_" + scramble_filename() + ".tmp";
@@ -815,7 +821,7 @@ namespace cslib {
     }
     TempFile(const std::filesystem::path& _createAs) {
       if (std::filesystem::exists(_createAs))
-        throw_up("File ", _createAs.filename(), " already exists in folder ", _createAs.parent_path());
+        cslib_throw_up("File ", _createAs.filename(), " already exists in folder ", _createAs.parent_path());
       isAt = File(_createAs, true).isAt; // Create the file
     }
     ~TempFile() {
@@ -823,37 +829,9 @@ namespace cslib {
         std::filesystem::remove(isAt);
     }
 
-    TempFile(const TempFile& _other) {
-      /*
-        Create a copy of a file with the
-        same content but different name.
-        Note:
-          The original file will not be deleted.
-      */
-      isAt = _other.isAt; // Copy the path
-      str_t newName;
-      do {
-        newName = "cslibTempFile_" + scramble_filename() + ".tmp";
-      } while (std::filesystem::exists(std::filesystem::temp_directory_path() / newName));
-      isAt = File(std::filesystem::temp_directory_path() / newName, true).isAt; // Ensure the file does not already exist
-      // Copy the content
-    }
+    TempFile(const TempFile&) = delete;
+    TempFile& operator=(const TempFile&) = delete;
   };
-
-  TempFile& make_runtime_file() {
-    /*
-      Return a reference to a temporary file that is created
-      at runtime. The file is created in a static deque to
-      ensure that it is not deleted until the program exits.
-      Note:
-        Using deque cuz vector reallocation causes the
-        file to be deleted and/or its memory address to
-        change, which would lead to undefined behavior.
-    */
-    static std::deque<TempFile> runtimeFiles;
-    runtimeFiles.emplace_back();
-    return runtimeFiles.back();
-  }
 
 
 
@@ -880,7 +858,7 @@ namespace cslib {
           If the folder already exists, it will throw an error.
       */
       if (std::filesystem::exists(_createAs))
-        throw_up("Folder ", _createAs.filename(), " already exists in folder ", _createAs.parent_path());
+        cslib_throw_up("Folder ", _createAs.filename(), " already exists in folder ", _createAs.parent_path());
       isAt = Folder(_createAs, true).isAt;
     }
     ~TempFolder() {
@@ -892,90 +870,51 @@ namespace cslib {
     TempFolder& operator=(const TempFolder&) = delete;
   };
 
-  Folder& make_runtime_folder() {
+
+
+  str_t wget(strv_t _url) {
     /*
-      Return a reference to a temporary folder that is created
-      at runtime. The folder is created in a static deque to
-      ensure that it is not deleted until the program exits.
+      Download the content of the given URL using wget
+      and return it as a string.
       Note:
-        Same as make_runtime_file, using deque to avoid
-        reallocation issues.
+        This function requires wget to be installed on the system.
+        It will throw an error if wget is not found or fails to execute.
     */
-    static std::deque<TempFolder> runtimeFolders;
-    runtimeFolders.emplace_back();
-    return runtimeFolders.back();
+    return sh_call("wget -q -O - " + str_t(_url.data())); // -q = quiet mode, -O - = output to stdout
   }
 
 
 
-  MACRO CONFIG_FILE_NAME = "cslib_configs.ini";
-  /*
-    Configuration file for cslib. The file is used
-    to store configuration options for cslib and
-    other libraries that use cslib.
-  */
-  File find_configsFile(bool _createIfNotExists) {
+
+  template <typename T>
+  requires std::is_arithmetic_v<T>
+  MACRO highest_value_of() {
     /*
-      Get the cslib configs file in the application data folder.
-      If the file does not exist, it will be created.
-      Returns a File object.
+      Get the highest possible value that
+      the type T can represent.
     */
-    Folder appDataFolder = [] {
-      /*
-        Find the application data folder for the current user.
-        Returns a Folder object pointing to the folder.
-        Note:
-          If the folder does not exist, it will be created.
-      */
-      std::filesystem::path appDataPath;
-      #ifdef _WIN32
-        appDataPath = std::filesystem::path(get_env("APPDATA"));
-      #else
-        try {
-          appDataPath = std::filesystem::path(get_env("XDG_CONFIG_HOME"));
-        } catch (cslib::any_error&) {
-          appDataPath = std::filesystem::path(get_env("HOME")) / ".config";
-        }
-      #endif
-      return Folder(appDataPath, false); // Don't create if not exists
-    }();
-    return File(appDataFolder.isAt / CONFIG_FILE_NAME, _createIfNotExists); // Create if not exists
+    if constexpr (std::is_integral_v<T>)
+      return std::numeric_limits<T>::max();
+    else if constexpr (std::is_floating_point_v<T>)
+      return std::numeric_limits<T>::infinity();
+    else
+      cslib_throw_up("Unsupported type for highest_value_of");
   }
 
 
 
-  std::map<str_t, std::map<str_t, str_t>> parse_configsFile(const File& _configsFile) {
-    std::map<str_t, std::map<str_t, str_t>> configs;
-    str_t content = _configsFile.read_text();
-    str_t currentSection;
-    for (strv_t line : separate(content, "\n")) {
-      str_t trimmedLine(line);
-      trimmedLine.erase(0, trimmedLine.find_first_not_of(" \t")); // Remove leading whitespace
-      trimmedLine.erase(trimmedLine.find_last_not_of(" \t") + 1); // Remove trailing whitespace
-      if (trimmedLine.empty() or trimmedLine.at(0) == ';')
-        continue; // Skip empty lines and comments
-      if (trimmedLine.at(0) == '[' and trimmedLine.back() == ']') {
-        // Section header
-        currentSection = trimmedLine.substr(1, trimmedLine.length() - 2);
-        configs.insert({currentSection, {}});
-      } else {
-        // Key-value pair
-        size_t eqPos = trimmedLine.find('=');
-        if (eqPos == str_t::npos)
-          throw_up("Invalid line in config file: '", line, "'");
-        str_t key = trimmedLine.substr(0, eqPos);
-        str_t value = trimmedLine.substr(eqPos + 1);
-        key.erase(0, key.find_first_not_of(" \t")); // Remove leading whitespace
-        key.erase(key.find_last_not_of(" \t") + 1); // Remove trailing whitespace
-        value.erase(0, value.find_first_not_of(" \t")); // Remove leading whitespace
-        value.erase(value.find_last_not_of(" \t") + 1); // Remove trailing whitespace
-        if (currentSection.empty())
-          throw_up("Key-value pair without section in config file: '", line, "'");
-        if (configs.find(currentSection) == configs.end())
-          throw_up("Key-value pair in unknown section in config file: '", line, "'");
-        configs[currentSection].insert({key, value});
-      }
-    }
-    return configs;
+  template <typename T>
+  requires std::is_arithmetic_v<T>
+  MACRO lowest_value_of() {
+    /*
+      Get the lowest possible value that
+      the type T can represent.
+    */
+    if constexpr (std::is_integral_v<T>)
+      return std::numeric_limits<T>::lowest();
+    else if constexpr (std::is_floating_point_v<T>)
+      return -std::numeric_limits<T>::infinity();
+    else
+      cslib_throw_up("Unsupported type for lowest_value_of");
   }
 } // namespace cslib
