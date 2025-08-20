@@ -48,10 +48,28 @@ namespace LRZTAR {
   };
   #define throw_up(...) throw LRZTAR::fru_error(__LINE__, __VA_ARGS__)
 
+  enum class BackupChanges {
+    MODIFIED,
+    ADDED,
+    DELETED
+  };
+  FIXED str_t name_BackupChanges(BackupChanges _backupChanges) {
+    switch (_backupChanges) {
+      case BackupChanges::MODIFIED: return "MODIFIED";
+      case BackupChanges::ADDED:    return "ADDED";
+      case BackupChanges::DELETED:  return "DELETED";
+      default:                      return "UNKNOWN";
+    }
+  }
+  FIXED BackupChanges name_BackupChanges(str_t _identifier) {
+    if (_identifier == "MODIFIED") return BackupChanges::MODIFIED;
+    if (_identifier == "ADDED")    return BackupChanges::ADDED;
+    if (_identifier == "DELETED")  return BackupChanges::DELETED;
+    throw_up("Unknown BackupChanges identifier: ", _identifier);
+  }
 
-
-  Folder decompress(const File&) = delete;
-  Folder decompress(const Folder&) = delete;
+  Folder decompress(File) = delete;
+  Folder decompress(Folder) = delete;
   Folder decompress() = delete;
   // No support for decompression yet due to excessive complexity
 
@@ -83,6 +101,11 @@ namespace LRZTAR {
 
 
   std::map<str_t, Folder> existing_backup_groups() {
+    /*
+      Note:
+        The first element the full-back up. Every
+        following are incremental changes.
+    */
     std::map<str_t, Folder> backups;
     for (const Road& _entry : BACKUP_FOLDER.list())
       if (!backups.insert({_entry.name(), Folder(_entry)}).second)
@@ -92,10 +115,28 @@ namespace LRZTAR {
 
 
 
+  std::vector<std::pair<Road, BackupChanges>> list_changes_from_full_backup(Folder _backupGroup, Folder _compareTo) {
+    /*
+      Create a list of changes from the full backup
+      Example:
+        file.txt [MODIFIED]
+        folder/subfile.txt [ADDED]
+        folder/subfolder [DELETED]
+    */
+    std::vector<std::pair<Road, BackupChanges>> changes;
+    for (std::variant<File, Folder, Road> _entry : _backupGroup.typed_list()) {
+      BackupChanges change = determine_change_type(_entry, _compareTo);
+      changes.emplace_back(_entry, change);
+    }
+    return changes;
+  }
+
+
+
   std::vector<Folder> get_all_folders_in_exchange() {
-    Out out = make_out(__PRETTY_FUNCTION__);
+    Out out = make_out(__func__);
     std::vector<Folder> folders;
-    for (const Road& entry : EXCHANGE_FOLDER.list()) {
+    for (Road entry : EXCHANGE_FOLDER.list()) {
       folders.emplace_back(entry); // Implicit error handling
       out << "Found folder " << folders.back() << " in exchange folder " << EXCHANGE_FOLDER << '\n';
     }
@@ -104,7 +145,7 @@ namespace LRZTAR {
   }
 
 
-  Folder carry_copy_in_here(const Folder& toBeCompressed) {
+  Folder carry_copy_in_here(Folder _toBeCompressed) {
     /*
       Copy the folder that is supposed to be handled by
       this program to this directory
@@ -115,21 +156,21 @@ namespace LRZTAR {
         // Copies the folder "docs" to "/root/shared"
     */
     Out out = make_out(__func__);
-    if (!EXCHANGE_FOLDER.has(toBeCompressed))
-      throw_up("Target folder ", toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER); 
-    if (WORKING_DIR.has(toBeCompressed))
-      throw_up("Target folder ", toBeCompressed, " is already in the working directory ", WORKING_DIR);
+    if (!EXCHANGE_FOLDER.has(_toBeCompressed))
+      throw_up("Target folder ", _toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER); 
+    if (WORKING_DIR.has(_toBeCompressed))
+      throw_up("Target folder ", _toBeCompressed, " is already in the working directory ", WORKING_DIR);
 
-    out << "Copying folder " << toBeCompressed << " to working directory " << WORKING_DIR << '\n';
-    Folder copyOfToBeCompressed = toBeCompressed.copy_self_into(WORKING_DIR);
-    out << "Copied folder " << toBeCompressed << " to working directory " << WORKING_DIR << '\n';
+    out << "Copying folder " << _toBeCompressed << " to working directory " << WORKING_DIR << '\n';
+    Folder copyOfToBeCompressed = _toBeCompressed.copy_self_into(WORKING_DIR);
+    out << "Copied folder " << _toBeCompressed << " to working directory " << WORKING_DIR << '\n';
     if (!WORKING_DIR.has(copyOfToBeCompressed))
-      throw_up("Failed to copy folder ", toBeCompressed, " to working directory ", WORKING_DIR);
+      throw_up("Failed to copy folder ", _toBeCompressed, " to working directory ", WORKING_DIR);
     return copyOfToBeCompressed;
   }
 
 
-  File compress(Folder& toBeCompressed) {
+  File compress(Folder& _toBeCompressed) {
     /*
       Compress the folder and return the compressed
       .tar.lrz file
@@ -139,25 +180,25 @@ namespace LRZTAR {
     */
     Out out = make_out(__func__);
 
-    if (!WORKING_DIR.has(toBeCompressed))
-      throw_up("Folder ", toBeCompressed, " isn't in the working directory ", WORKING_DIR);
+    if (!WORKING_DIR.has(_toBeCompressed))
+      throw_up("Folder ", _toBeCompressed, " isn't in the working directory ", WORKING_DIR);
 
-    str_t willBecome = toBeCompressed.str() + EXPECTED_EXTENSION;
+    str_t willBecome = _toBeCompressed.str() + EXPECTED_EXTENSION;
     if (std::filesystem::exists(willBecome))
       throw_up("Compressed file ", willBecome, " already exists in the working directory ", WORKING_DIR);
 
-    out << "Compressing folder " << toBeCompressed << " to " << willBecome << '\n';
-    sh_call(COMPRESS_CMD_HEAD + toBeCompressed.str() + COMPRESS_CMD_TAIL);
-    out << "Compressed folder " << toBeCompressed << " to " << willBecome << '\n';
+    out << "Compressing folder " << _toBeCompressed << " to " << willBecome << '\n';
+    sh_call(COMPRESS_CMD_HEAD + _toBeCompressed.str() + COMPRESS_CMD_TAIL);
+    out << "Compressed folder " << _toBeCompressed << " to " << willBecome << '\n';
     File willBecomeFile(willBecome);
     if (!WORKING_DIR.has(willBecomeFile))
-      throw_up("Failed to compress folder ", toBeCompressed, " to ", willBecome, " in working directory ", WORKING_DIR);
-    std::filesystem::remove_all(toBeCompressed); // Remove the copy
+      throw_up("Failed to compress folder ", _toBeCompressed, " to ", willBecome, " in working directory ", WORKING_DIR);
+    std::filesystem::remove_all(_toBeCompressed); // Remove the copy
     return willBecomeFile;
   }
 
 
-  void archive(File& compressedFile) {
+  void archive(File& _compressedFile) {
     /*
       Move the compressed file to the backup folder
       Example:
@@ -167,20 +208,20 @@ namespace LRZTAR {
     */
     Out out = make_out(__func__);
 
-    if (!WORKING_DIR.has(compressedFile))
-      throw_up("Compressed file ", compressedFile, " isn't in the working directory ", WORKING_DIR);
-    if (BACKUP_FOLDER.has(compressedFile))
-      throw_up("Compressed file ", compressedFile, " is already in the backup folder ", BACKUP_FOLDER);
+    if (!WORKING_DIR.has(_compressedFile))
+      throw_up("Compressed file ", _compressedFile, " isn't in the working directory ", WORKING_DIR);
+    if (BACKUP_FOLDER.has(_compressedFile))
+      throw_up("Compressed file ", _compressedFile, " is already in the backup folder ", BACKUP_FOLDER);
 
-    compressedFile.rename_self_to(compressedFile.name() + "@" + TimeStamp().as_str());
-    compressedFile.move_self_into(BACKUP_FOLDER);
-    if (!BACKUP_FOLDER.has(compressedFile))
-      throw_up("Failed to move compressed file ", compressedFile, " to backup folder ", BACKUP_FOLDER);
-    out << "Archived compressed file " << compressedFile << " to " << BACKUP_FOLDER << '\n';
+    _compressedFile.rename_self_to(_compressedFile.name() + "@" + TimeStamp().as_str());
+    _compressedFile.move_self_into(BACKUP_FOLDER);
+    if (!BACKUP_FOLDER.has(_compressedFile))
+      throw_up("Failed to move compressed file ", _compressedFile, " to backup folder ", BACKUP_FOLDER);
+    out << "Archived compressed file " << _compressedFile << " to " << BACKUP_FOLDER << '\n';
   }
 
 
-  void pull_and_archive(const Folder& toBeCompressed) {
+  void pull_and_archive(const Folder& _toBeCompressed) {
     /*
       Pull the folder from the exchange folder,
       compress it and archive it
@@ -192,8 +233,8 @@ namespace LRZTAR {
     */
     Out out = make_out(__func__);
 
-    out << "Pulling folder " << toBeCompressed << " from exchange folder " << EXCHANGE_FOLDER << '\n';
-    Folder copyOfToBeCompressed = carry_copy_in_here(toBeCompressed);
+    out << "Pulling folder " << _toBeCompressed << " from exchange folder " << EXCHANGE_FOLDER << '\n';
+    Folder copyOfToBeCompressed = carry_copy_in_here(_toBeCompressed);
     File compressedFile = compress(copyOfToBeCompressed);
     archive(compressedFile);
     out << "Done! Compressed file is " << compressedFile << '\n';

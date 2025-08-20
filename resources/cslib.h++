@@ -68,6 +68,8 @@ namespace cslib {
   */
   template <typename T>
   using cptr = const T *const;
+  template <typename T>
+  using maybe = std::optional<T>;
   #define SHARED inline // Alias inline for shared functions, etc.
   #define MACRO inline constexpr auto // Macros for macro definitions
   #define FIXED inline constexpr // Explicit alternative for MACRO
@@ -255,7 +257,7 @@ namespace cslib {
       Retry a function up to `retries` times with a delay
       of `delay` milliseconds between each retry.
       Example:
-        std::function<int()> func = []() {
+        std::function<int()> func = [] {
           // Do something that might fail
         };
         cslib::retry(func, 3, 0, 1);
@@ -657,10 +659,15 @@ namespace cslib {
       /*
         List all entries in the folder.
         Returns a vector of Path, File and Folder objects.
+        Note:
+          Sorted by name
       */
       std::vector<Road> entries;
       for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(isAt))
-        entries.emplace_back(Road(entry.path()));
+        entries.emplace_back(entry.path());
+      std::sort(entries.begin(), entries.end(), [](const Road& a, const Road& b) {
+        return a.str() < b.str();
+      });
       return entries;
     }
     std::vector<std::variant<File, Folder, Road>> typed_list() const;
@@ -922,15 +929,14 @@ namespace cslib {
 
 
 
-  template <typename ExpectedType>
-  FIXED ExpectedType& grab_var(const auto& _variant) {
-    if (!std::holds_alternative<ExpectedType>(_variant))
-      throw_up("Expected variant type ", typeid(ExpectedType).name(), " but got ", _variant.index());
-    return std::get<ExpectedType>(_variant);
-  }
-
-
-
   template <typename T>
-  
+  FIXED T& grab_var(std::optional<T>& _optional) {
+    return _optional.value();
+  }
+  template <typename T>
+  FIXED T& grab_var(const auto& _variant) {
+    if (!std::holds_alternative<T>(_variant))
+      throw_up("Expected variant type ", typeid(T).name(), " but got ", _variant.index());
+    return std::get<T>(_variant);
+  }
 } // namespace cslib
