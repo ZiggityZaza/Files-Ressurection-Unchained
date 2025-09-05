@@ -31,20 +31,6 @@ enum BackupChanges {
   ADDED,
   DELETED
 };
-FIXED maybe<strv_t> to_str(BackupChanges _identifier) noexcept {
-  switch (_identifier) {
-    case BackupChanges::MODIFIED: return "MODIFIED";
-    case BackupChanges::ADDED:    return "ADDED";
-    case BackupChanges::DELETED:  return "DELETED";
-    default: return unexpect("Unknown BackupChanges value: ", _identifier);
-  }
-}
-FIXED maybe<BackupChanges> str_to_backupChanges(str_t _identifier) {
-  if (_identifier == "MODIFIED") return BackupChanges::MODIFIED;
-  if (_identifier == "ADDED")    return BackupChanges::ADDED;
-  if (_identifier == "DELETED")  return BackupChanges::DELETED;
-  return unexpect("Unknown BackupChanges identifier: ", _identifier);
-}
 
 Folder decompress(File) = delete;
 Folder decompress(Folder) = delete;
@@ -86,7 +72,7 @@ std::map<str_t, Folder> existing_backup_groups() {
 
 
 using notepad_t = std::vector<std::pair<road_t, BackupChanges>>;
-void note_deleted_raw(notepad_t& _notepad, Folder _original, Folder _current) {
+void note_deleted_raw(notepad_t& _notepad, Folder _original, Folder _current) noexcept {
   /*
     Note which files/folders are missing
     Example:
@@ -96,14 +82,16 @@ void note_deleted_raw(notepad_t& _notepad, Folder _original, Folder _current) {
         {"folder/subfolder", DELETED},
         ...
       }
+    Note:
+      This algorithm is crazy inefficient
   */
   for (road_t entry : _original.list()) {
     if (holds<File>(entry))
-      if (!_current.find(get<File>(entry).name()))
+      if (!_current.find(get<File>(entry)))
         _notepad.push_back({entry, DELETED});
 
     if (holds<Folder>(entry)) {
-      maybe<Folder> _subFolder(get<Folder>(get(_current.find(get<Folder>(entry).name()))));
+      maybe<Folder> _subFolder(get<Folder>(get(_current.find(get<Folder>(entry)))));
       if (_subFolder.has_value())
         note_deleted_raw(_notepad, Folder(get(_subFolder)), get<Folder>(entry));
       else
@@ -111,17 +99,86 @@ void note_deleted_raw(notepad_t& _notepad, Folder _original, Folder _current) {
     }
 
     if (holds<BizarreRoad>(entry))
-      cslib_throw_up("Bizarre file types such as '", get<BizarreRoad>(entry).str(), "' aren't supported yet.");
+      cslib_throw_up("Bizarre file types such as ", get<BizarreRoad>(entry), " aren't supported yet.");
   }
 }
+
+
+void note_added_raw(notepad_t& _notepad, Folder _original, Folder _current) noexcept {
+  /*
+    Note which files/folders are new
+    Example:
+      std::vector<std::pair<Folder::list_t, BackupChanges>> changes;
+      note_added_raw(changes, "./original", "./current");
+      changes == {
+        {"folder/subfolder/newfile.txt", ADDED},
+        ...
+      }
+    Note:
+      This algorithm is crazy inefficient
+  */
+  for (road_t entry : _current.list()) {
+    if (holds<File>(entry))
+      if (!_original.find(get<File>(entry)))
+        _notepad.push_back({entry, ADDED});
+
+    if (holds<Folder>(entry)) {
+      maybe<Folder> _subFolder(get<Folder>(get(_original.find(get<Folder>(entry)))));
+      if (_subFolder.has_value())
+        note_added_raw(_notepad, Folder(get(_subFolder)), get<Folder>(entry));
+      else
+        _notepad.push_back({entry, ADDED});
+    }
+
+    if (holds<BizarreRoad>(entry))
+      cslib_throw_up("Bizarre file types such as ", get<BizarreRoad>(entry), " aren't supported yet.");
+  }
+}
+
+
+
+void note_changed_raw(notepad_t& _notepad, Folder _original, Folder _current) noexcept {
+  /*
+    Note which files/folders have been modified
+    Example:
+      std::vector<std::pair<Folder::list_t, BackupChanges>> changes;
+      note_changed_raw(changes, "./original", "./current");
+      changes == {
+        {"folder/subfolder/changedfile.txt", MODIFIED},
+        ...
+      }
+    Note:
+      This algorithm is crazy inefficient
+  */
+  for (road_t entry : _current.list()) {
+    if (holds<File>(entry)) {
+      maybe<File> originalFile(get<File>(get(_original.find(get<File>(entry)))));
+      if (originalFile.has_value())
+        if (get<File>(entry).last_modified() > originalFile->last_modified())
+          _notepad.push_back({entry, MODIFIED});
+    }
+
+    if (holds<Folder>(entry)) {
+      maybe<Folder> _subFolder(get<Folder>(get(_original.find(get<Folder>(entry)))));
+      if (_subFolder.has_value())
+        note_changed_raw(_notepad, Folder(get(_subFolder)), get<Folder>(entry));
+    }
+
+    if (holds<BizarreRoad>(entry))
+      cslib_throw_up("Bizarre file types such as ", get<BizarreRoad>(entry), " aren't supported yet.");
+  }
+}
+
+
+
 
 
 
 std::vector<Folder> get_all_folders_in_exchange() {
   Out out = make_out(__func__);
   std::vector<Folder> folders;
-  for (road_t entry : EXCHANGE_FOLDER.list()) {
-    folders.emplace_back(ignore_road_t(entry)); // Implicit error handling
+  for (Road entry : EXCHANGE_FOLDER.untyped_list()) {
+    folders.emplace_back(entry); // Implicit error handling
     out << "Found folder " << folders.back() << " in exchange folder " << EXCHANGE_FOLDER << '\n';
   }
   out << "Total of " << folders.size() << " folders found in exchange folder " << EXCHANGE_FOLDER << '\n';
@@ -129,7 +186,8 @@ std::vector<Folder> get_all_folders_in_exchange() {
 }
 
 
-Folder carry_copy_in_here(Folder _toBeCompressed) {
+
+[[nodiscard]] maybe<Folder> carry_copy_in_here(Folder _toBeCompressed) {
   /*
     Copy the folder that is supposed to be handled by
     this program to this directory
@@ -141,20 +199,20 @@ Folder carry_copy_in_here(Folder _toBeCompressed) {
   */
   Out out = make_out(__func__);
   if (!EXCHANGE_FOLDER.find(_toBeCompressed))
-    throw_up("Target folder ", _toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER);
-  if (WORKING_DIR.has(_toBeCompressed))
-    throw_up("Target folder ", _toBeCompressed, " is already in the working directory ", WORKING_DIR);
+    return unexpect("Target folder ", _toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER);
+  if (WORKING_DIR.find(_toBeCompressed))
+    return unexpect("Target folder ", _toBeCompressed, " is already in the working directory ", WORKING_DIR);
 
   out << "Copying folder " << _toBeCompressed << " to working directory " << WORKING_DIR << '\n';
-  Folder copyOfToBeCompressed = _toBeCompressed.copy_self_into(WORKING_DIR);
+  Folder copyOfToBeCompressed = get(_toBeCompressed.copy_self_into(WORKING_DIR));
   out << "Copied folder " << _toBeCompressed << " to working directory " << WORKING_DIR << '\n';
-  if (!WORKING_DIR.has(copyOfToBeCompressed))
-    throw_up("Failed to copy folder ", _toBeCompressed, " to working directory ", WORKING_DIR);
+  if (!WORKING_DIR.find(copyOfToBeCompressed))
+    return unexpect("Failed to copy folder ", _toBeCompressed, " to working directory ", WORKING_DIR);
   return copyOfToBeCompressed;
 }
 
 
-File compress(Folder& _toBeCompressed) {
+[[nodiscard]] maybe<File> compress(Folder& _toBeCompressed) {
   /*
     Compress the folder and return the compressed
     .tar.lrz file
@@ -164,25 +222,25 @@ File compress(Folder& _toBeCompressed) {
   */
   Out out = make_out(__func__);
 
-  if (!WORKING_DIR.has(_toBeCompressed))
-    throw_up("Folder ", _toBeCompressed, " isn't in the working directory ", WORKING_DIR);
+  if (!WORKING_DIR.find(_toBeCompressed))
+    return unexpect("Folder ", _toBeCompressed, " isn't in the working directory ", WORKING_DIR);
 
   str_t willBecome = _toBeCompressed.str() + EXPECTED_EXTENSION;
   if (std::filesystem::exists(willBecome))
-    throw_up("Compressed file ", willBecome, " already exists in the working directory ", WORKING_DIR);
+    return unexpect("Compressed file ", willBecome, " already exists in the working directory ", WORKING_DIR);
 
   out << "Compressing folder " << _toBeCompressed << " to " << willBecome << '\n';
   sh_call(COMPRESS_CMD_HEAD + _toBeCompressed.str() + COMPRESS_CMD_TAIL);
   out << "Compressed folder " << _toBeCompressed << " to " << willBecome << '\n';
   File willBecomeFile(willBecome);
-  if (!WORKING_DIR.has(willBecomeFile))
-    throw_up("Failed to compress folder ", _toBeCompressed, " to ", willBecome, " in working directory ", WORKING_DIR);
+  if (!WORKING_DIR.find(willBecomeFile))
+    return unexpect("Failed to compress folder ", _toBeCompressed, " to ", willBecome, " in working directory ", WORKING_DIR);
   std::filesystem::remove_all(_toBeCompressed); // Remove the copy
   return willBecomeFile;
 }
 
 
-void archive(File& _compressedFile) {
+[[nodiscard]] maybe<void> archive(File& _compressedFile) {
   /*
     Move the compressed file to the backup folder
     Example:
@@ -192,20 +250,22 @@ void archive(File& _compressedFile) {
   */
   Out out = make_out(__func__);
 
-  if (!WORKING_DIR.has(_compressedFile))
-    throw_up("Compressed file ", _compressedFile, " isn't in the working directory ", WORKING_DIR);
-  if (BACKUP_FOLDER.has(_compressedFile))
-    throw_up("Compressed file ", _compressedFile, " is already in the backup folder ", BACKUP_FOLDER);
+  if (!WORKING_DIR.find(_compressedFile))
+    return unexpect("Compressed file ", _compressedFile, " isn't in the working directory ", WORKING_DIR);
+  if (BACKUP_FOLDER.find(_compressedFile))
+    return unexpect("Compressed file ", _compressedFile, " is already in the backup folder ", BACKUP_FOLDER);
 
   _compressedFile.rename_self_to(_compressedFile.name() + "@" + TimeStamp().as_str());
   _compressedFile.move_self_into(BACKUP_FOLDER);
-  if (!BACKUP_FOLDER.has(_compressedFile))
-    throw_up("Failed to move compressed file ", _compressedFile, " to backup folder ", BACKUP_FOLDER);
+  if (!BACKUP_FOLDER.find(_compressedFile))
+    return unexpect("Failed to move compressed file ", _compressedFile, " to backup folder ", BACKUP_FOLDER);
   out << "Archived compressed file " << _compressedFile << " to " << BACKUP_FOLDER << '\n';
+  return {};
 }
 
 
-void pull_and_archive(const Folder& _toBeCompressed) {
+
+maybe<void> pull_and_archive(const Folder& _toBeCompressed) {
   /*
     Pull the folder from the exchange folder,
     compress it and archive it
@@ -218,11 +278,17 @@ void pull_and_archive(const Folder& _toBeCompressed) {
   Out out = make_out(__func__);
 
   out << "Pulling folder " << _toBeCompressed << " from exchange folder " << EXCHANGE_FOLDER << '\n';
-  Folder copyOfToBeCompressed = carry_copy_in_here(_toBeCompressed);
-  File compressedFile = compress(copyOfToBeCompressed);
-  archive(compressedFile);
-  out << "Done! Compressed file is " << compressedFile << '\n';
+  maybe<Folder> copyOfToBeCompressed = carry_copy_in_here(_toBeCompressed);
+  if (!copyOfToBeCompressed)
+    return unexpect(copyOfToBeCompressed.error());
+  maybe<File> compressedFile = compress(*copyOfToBeCompressed);
+  if (!compressedFile)
+    return unexpect(compressedFile.error());
+  archive(*compressedFile);
+  out << "Done! Compressed file is " << *compressedFile << '\n';
+  return {};
 }
+
 
 
 void go_back_to_sleep() {
@@ -243,20 +309,19 @@ void go_back_to_sleep() {
   Out out = make_out(__func__);
 
   out << "Going back to sleep...\n";
-  uint currentMonth = TimeStamp().month();
-  uint targetYear = TimeStamp().year();
-  uint nextMonth = currentMonth + 1;
+  size_t targetYear = TimeStamp().year();
+  size_t nextMonth = TimeStamp().month() + 1;
   if (nextMonth > 12) {
     nextMonth = 1;
     ++targetYear;
   }
   TimeStamp nextRun(
-    0,
-    0,
-    3,
-    1,
-    nextMonth,
-    targetYear
+    3, // h
+    33, // min
+    0, // s
+    1, // d
+    nextMonth, // month
+    targetYear // y
   );
   out << "Next run will be on " << nextRun.as_str() << "\n";
   // Hibernate the program until the next run
