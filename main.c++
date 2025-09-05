@@ -26,46 +26,24 @@ using namespace cslib;
     as the binary and the compressed file
 */
 
-class fru_error : public std::runtime_error { public:
-  /*
-    Custom error class for LRZTAR
-    Example:
-      throw LRZTAR::fru_error("Something went wrong");
-  */
-  fru_error(size_t _lineInCode, const auto&... _msgs) : std::runtime_error([_lineInCode, &_msgs...] {
-    /*
-      Create a custom error message with the given messages.
-      Example:
-        throw cslib::any_error(__LINE__, "Aye", L"yo", '!', 123, true);
-    */
-    std::ostringstream oss;
-    oss << "LRZTAR::fru_error called in workspace " << std::filesystem::current_path();
-    oss << " on line " << _lineInCode << " because: ";
-    ((oss << to_str(std::forward<decltype(_msgs)>(_msgs))), ...);
-    oss << std::flush;
-    return oss.str();
-  }()) {}
-};
-#define throw_up(...) throw fru_error(__LINE__, __VA_ARGS__)
-
 enum BackupChanges {
   MODIFIED,
   ADDED,
   DELETED
 };
-FIXED str_t backupChnages_to_str(BackupChanges _backupChanges) {
-  switch (_backupChanges) {
+FIXED maybe<strv_t> to_str(BackupChanges _identifier) noexcept {
+  switch (_identifier) {
     case BackupChanges::MODIFIED: return "MODIFIED";
     case BackupChanges::ADDED:    return "ADDED";
     case BackupChanges::DELETED:  return "DELETED";
-    default:                      return "UNKNOWN";
+    default: return unexpect("Unknown BackupChanges value: ", _identifier);
   }
 }
-FIXED BackupChanges str_to_backupChanges(str_t _identifier) {
+FIXED maybe<BackupChanges> str_to_backupChanges(str_t _identifier) {
   if (_identifier == "MODIFIED") return BackupChanges::MODIFIED;
   if (_identifier == "ADDED")    return BackupChanges::ADDED;
   if (_identifier == "DELETED")  return BackupChanges::DELETED;
-  throw_up("Unknown BackupChanges identifier: ", _identifier);
+  return unexpect("Unknown BackupChanges identifier: ", _identifier);
 }
 
 Folder decompress(File) = delete;
@@ -78,19 +56,8 @@ MACRO LRZCAT_CMD_TAIL = "\" | tar -tv";
 MACRO COMPRESS_CMD_HEAD = "lrztar -z \"";
 MACRO COMPRESS_CMD_TAIL = "\"";
 MACRO EXPECTED_EXTENSION = ".tar.lrz";
-// Out out = Out(std::cout, "[FRU]:", Magenta);
-Out make_out(str_t funcName) {
-  const char* color;
-  switch (roll_dice(0, 5)) {
-    case 0: color = Red; break;
-    case 1: color = Green; break;
-    case 2: color = Yellow; break;
-    case 3: color = Blue; break;
-    case 4: color = Magenta; break;
-    case 5: color = Cyan; break;
-    default: throw_up("Unkown color");
-  }
-  return Out(std::cout, "[FRU " + funcName + "]:", color);
+Out make_out(str_t funcName, strv_t _color = "") noexcept {
+  return Out(std::cout, "[FRU " + funcName + "]:", _color);
 }
 const Folder EXCHANGE_FOLDER("/root/fru_shared"); // Grab targets from (immutable)
 // Folder BACKUP_FOLDER("/root/fru_archive"); // Put compressed files in here
@@ -107,16 +74,19 @@ std::map<str_t, Folder> existing_backup_groups() {
       following are incremental changes.
   */
   std::map<str_t, Folder> backups;
-  for (const Road& _entry : BACKUP_FOLDER.list())
-    if (!backups.insert({_entry.name(), Folder(_entry)}).second)
-      throw_up("Duplicate backup group found: ", _entry.name());
+  for (Road entry : BACKUP_FOLDER.untyped_list()) {
+    Road entryBase = entry;
+    if (!backups.insert({entryBase.name(), Folder(entryBase)}).second)
+      cslib_throw_up("Impossible duplicate backup group found: ", entryBase.name());
+  }
   return backups;
 }
 
 
 
-using notepad_t = std::vector<std::pair<Folder::list_t, BackupChanges>>;
-void note_deleted_raw(notepad_t& _notepad, Folder _compareTo, Folder _current) {
+
+using notepad_t = std::vector<std::pair<road_t, BackupChanges>>;
+void note_deleted_raw(notepad_t& _notepad, Folder _original, Folder _current) {
   /*
     Note which files/folders are missing
     Example:
@@ -127,25 +97,21 @@ void note_deleted_raw(notepad_t& _notepad, Folder _compareTo, Folder _current) {
         ...
       }
   */
-  for (std::variant<File, Folder, Road> entry : _compareTo.typed_list()) {
-    if (holds_alt<File>(entry))
-      if (!_current.has(std::get<File>(entry).name()))
+  for (road_t entry : _original.list()) {
+    if (holds<File>(entry))
+      if (!_current.find(get<File>(entry).name()))
         _notepad.push_back({entry, DELETED});
 
-    if (holds_alt<Folder>(entry)) {
-      maybe<Folder> _subFolder(_current.has(std::get<Folder>(entry).name()));
-      if (_subFolder)
-        note_deleted_raw(_notepad, Folder(_subFolder.value()), std::get<Folder>(entry));
+    if (holds<Folder>(entry)) {
+      maybe<Folder> _subFolder(get<Folder>(get(_current.find(get<Folder>(entry).name()))));
+      if (_subFolder.has_value())
+        note_deleted_raw(_notepad, Folder(get(_subFolder)), get<Folder>(entry));
       else
         _notepad.push_back({entry, DELETED});
-      // if (!_current.has(std::get<Folder>(entry).name())) {
-      //   _notepad.push_back({entry, DELETED});
-      //   note_deleted_raw(_notepad, Folder(_current.has(std::get<Folder>(entry).name()).value()), std::get<Folder>(entry));
-      // }
     }
 
-    if (holds_alt<Road>(entry))
-      throw_up("Bizarre file types such as '", std::get<Road>(entry), "' aren't supported yet.");
+    if (holds<BizarreRoad>(entry))
+      cslib_throw_up("Bizarre file types such as '", get<BizarreRoad>(entry).str(), "' aren't supported yet.");
   }
 }
 
@@ -154,8 +120,8 @@ void note_deleted_raw(notepad_t& _notepad, Folder _compareTo, Folder _current) {
 std::vector<Folder> get_all_folders_in_exchange() {
   Out out = make_out(__func__);
   std::vector<Folder> folders;
-  for (Road entry : EXCHANGE_FOLDER.list()) {
-    folders.emplace_back(entry); // Implicit error handling
+  for (road_t entry : EXCHANGE_FOLDER.list()) {
+    folders.emplace_back(ignore_road_t(entry)); // Implicit error handling
     out << "Found folder " << folders.back() << " in exchange folder " << EXCHANGE_FOLDER << '\n';
   }
   out << "Total of " << folders.size() << " folders found in exchange folder " << EXCHANGE_FOLDER << '\n';
@@ -174,8 +140,8 @@ Folder carry_copy_in_here(Folder _toBeCompressed) {
       // Copies the folder "docs" to "/root/shared"
   */
   Out out = make_out(__func__);
-  if (!EXCHANGE_FOLDER.has(_toBeCompressed))
-    throw_up("Target folder ", _toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER); 
+  if (!EXCHANGE_FOLDER.find(_toBeCompressed))
+    throw_up("Target folder ", _toBeCompressed, " isn't in the exchange folder ", EXCHANGE_FOLDER);
   if (WORKING_DIR.has(_toBeCompressed))
     throw_up("Target folder ", _toBeCompressed, " is already in the working directory ", WORKING_DIR);
 
