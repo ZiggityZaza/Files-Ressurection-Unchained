@@ -1,5 +1,11 @@
 #include "../CeggsyLib/cslib.h++" // Adjust path as needed (get it on Github ZiggityZaza/CeggsyLib)
+#include <iostream>
+
+
 using namespace cslib;
+template <typename T>
+using opt = std::optional<T>;
+#define make_out(color) Out out = Out(std::cerr, "[" + to_str(__func__) + "]", color);
 
 
 
@@ -10,10 +16,6 @@ namespace IncrementalBackup {
     two folders (original and current)
     Note:
       This namespace is MARVELOUS!
-    Another note:
-      All the functions are dog slow because they
-      read all files fully into memory to compare
-      (vector<char> comparison).
   */
   enum BackupChanges : char {
     MODIFIED = 'M',
@@ -22,8 +24,9 @@ namespace IncrementalBackup {
   };
 
 
+
   using notepad_t = std::vector<std::pair<Road, BackupChanges>>;
-  void note_deleted_raw(notepad_t& _notepad, Folder _original, Folder _current) noexcept {
+  void note_deleted_raw(notepad_t& notepad, Folder original, Folder current) {
     /*
       Note which files/folders are missing
       Example:
@@ -33,28 +36,33 @@ namespace IncrementalBackup {
           ...
         }
     */
-    Out out = Out(std::cout, "[FRU IncrementalBackup note_deleted_raw]:", Red);
-    for (Road entry : _original.untyped_list()) {
-      out << "Entry: " << entry << std::endl;
-      if (entry.type() == stdfs::file_type::regular)
-        if (!_current.untyped_find(entry))
-          _notepad.push_back({entry, DELETED});
+    make_out(Red);
 
-      if (entry.type() == stdfs::file_type::directory) {
-        maybe<Folder> subFolder(_current.untyped_find(entry));
+    for (Road ogEntry : original.list()) {
+      opt<Road> counterPart = current.has(ogEntry.name());
+      if (counterPart.has_value()) // If counter part exists, skip
+        continue;
+
+      if (ogEntry.type() == stdfs::file_type::directory) {
+        opt<Folder> subFolder(*counterPart);
         if (subFolder.has_value())
-          note_deleted_raw(_notepad, Folder(*subFolder), Folder(entry));
-        else
-          _notepad.push_back({entry, DELETED});
+          note_deleted_raw(notepad, *subFolder, Folder(ogEntry));
+        else {
+          notepad.push_back({ogEntry, DELETED});
+          out << ogEntry << " was deleted...\n";
+        }
       }
-
-      if (entry.type() != stdfs::file_type::regular and entry.type() != stdfs::file_type::directory)
-        exit_because(__LINE__, "Bizarre file types such as ", entry, " aren't supported yet.");
+      else // Files, sockets, ...
+        if (!counterPart) {
+          notepad.push_back({ogEntry, DELETED});
+          out << ogEntry << " was deleted...\n";
+        }
     }
   }
 
 
-  void note_added_raw(notepad_t& _notepad, Folder _original, Folder _current) noexcept {
+
+  void note_added_raw(notepad_t& notepad, Folder original, Folder current) noexcept {
     /*
       Note which files/folders are new
       Example:
@@ -64,29 +72,29 @@ namespace IncrementalBackup {
           ...
         }
     */
-    Out out = Out(std::cout, "[FRU IncrementalBackup note_added_raw]:", Yellow);
-    for (Road entry : _current.untyped_list()) {
-      out << "Entry: " << entry << std::endl;
-      if (entry.type() == stdfs::file_type::regular)
-        if (!_original.untyped_find(entry))
-          _notepad.push_back({entry, ADDED});
+    make_out(Yellow);
 
+    for (Road entry : current.list()) {
       if (entry.type() == stdfs::file_type::directory) {
-        maybe<Folder> subFolder(_original.untyped_find(entry));
+        opt<Folder> subFolder(original.has(entry.name()));
         if (subFolder.has_value())
-          note_added_raw(_notepad, Folder(*subFolder), Folder(entry));
-        else
-          _notepad.push_back({entry, ADDED});
+          note_added_raw(notepad, *subFolder, Folder(entry));
+        else {
+          notepad.push_back({entry, ADDED});
+          out << entry << " is new...\n";
+        }
       }
-
-      if (entry.type() != stdfs::file_type::regular and entry.type() != stdfs::file_type::directory)
-        exit_because(__LINE__, "Bizarre file types such as ", entry, " aren't supported yet.");
+      else  // Files, sockets, ...
+        if (!original.has(entry.name())) {
+          notepad.push_back({entry, ADDED});
+          out << entry << " is new...\n";
+        }
     }
   }
 
 
 
-  void note_changed_raw(notepad_t& _notepad, Folder _original, Folder _current) noexcept {
+  void note_changed_raw(notepad_t& notepad, Folder original, Folder current) noexcept {
     /*
       Note which files/folders have been modified
       Example:
@@ -96,24 +104,29 @@ namespace IncrementalBackup {
           ...
         }
     */
-    Out out = Out(std::cout, "[FRU IncrementalBackup note_changed_raw]:", Green);
-    for (Road entry : _current.untyped_list()) {
-      out << "Entry: " << entry << std::endl;
-      if (entry.type() == stdfs::file_type::regular) {
-        maybe<File> originalFile(_original.untyped_find(entry));
-        if (originalFile.has_value())
-          if (File(entry).read_binary() != File(*originalFile).read_binary())
-            _notepad.push_back({entry, MODIFIED});
-      }
+    make_out(Green);
 
-      if (entry.type() == stdfs::file_type::directory) {
-        maybe<Folder> subFolder(_original.untyped_find(entry));
-        if (subFolder.has_value())
-          note_changed_raw(_notepad, Folder(*subFolder), Folder(entry));
+    for (Road entry : current.list()) {
+      opt<Road> counterPart = original.has(entry.name());
+      if (!counterPart.has_value())
+        continue;
+      else if (counterPart.has_value() && (*counterPart).type() != entry.type()) {
+        notepad.push_back({entry, ADDED});
+        notepad.push_back({*counterPart, DELETED});
+        out << entry.name() << " was turned into another type...\n";
       }
-
-      if (entry.type() != stdfs::file_type::regular and entry.type() != stdfs::file_type::directory)
-        exit_because(__LINE__, "Bizarre file types such as ", entry, " aren't supported yet.");
+      else if (entry.type() == stdfs::file_type::directory)
+        note_changed_raw(notepad, Folder(*counterPart), Folder(entry));
+      else if (entry.type() == stdfs::file_type::regular) {
+        std::ifstream ogStream(counterPart.value().isAt, std::ios::binary);
+        std::ifstream entryStream(entry.isAt, std::ios::binary);
+        if (read_data(ogStream) != read_data(entryStream)) {
+          notepad.push_back({entry, MODIFIED});
+          out << entry.name() << " was modified...\n";
+        }
+      }
+      else
+        out << "Skipping " << entry << " because it is a special file and we don't handle those...\n";
     }
   }
 
@@ -124,9 +137,9 @@ namespace IncrementalBackup {
     /*
       Test the IncrementalBackup namespace
     */
-    Out out = Out(std::cout, "[FRU IncrementalBackup Test]:", Magenta);
-    Folder original("../original", true);
-    Folder current("../current", true);
+    make_out(Magenta);
+    Folder original("C:\\Users\\BLECHBUCHSE\\Desktop\\original");
+    Folder current("C:\\Users\\BLECHBUCHSE\\Desktop\\current");
 
     notepad_t changes;
     note_deleted_raw(changes, original, current);
@@ -147,11 +160,6 @@ namespace IncrementalBackup {
     out << "Total changes: " << changes.size() << std::endl;
   }
 };
-
-
-
-
-
 
 
 
