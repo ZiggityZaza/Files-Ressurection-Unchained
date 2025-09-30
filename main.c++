@@ -1,11 +1,18 @@
 #include "../CeggsyLib/cslib.h++" // Adjust path as needed (get it on Github ZiggityZaza/CeggsyLib)
 #include <iostream>
-
-
 using namespace cslib;
+const Folder ORIGINAL("C:\\Users\\BLECHBUCHSE\\Desktop\\original");
+const Folder CURRENT("C:\\Users\\BLECHBUCHSE\\Desktop\\current");
+
+std::ostream& out = std::cerr;
+// std::ofstream out("./logs.txt");
+
+
+
+
+
 template <typename T>
 using opt = std::optional<T>;
-#define make_out(color) Out out = Out(std::cerr, "[" + to_str(__func__) + "]", color);
 
 
 
@@ -25,108 +32,136 @@ namespace IncrementalBackup {
 
 
 
-  using notepad_t = std::vector<std::pair<Road, BackupChanges>>;
-  void note_deleted_raw(notepad_t& notepad, Folder original, Folder current) {
+  // Handle writing down differences
+  std::vector<std::pair<str_t, BackupChanges>> notepad;
+  
+  void was_deleted(Road original) {
+    // "/.../orginal/f1" -> "original/f1"
+    if (!original.str().starts_with(ORIGINAL.str()))
+      throw std::invalid_argument("Originally deleted entry '" + original.str() + "' isn't in the original dir '" + ORIGINAL.str() + "'");
+    notepad.push_back({original.str().substr(ORIGINAL.str().length() - ORIGINAL.name().length()), DELETED});
+  }
+  void was_modified(Road original) {
+    // "/.../orginal/f1" -> "original/f1"
+    if (!original.str().starts_with(ORIGINAL.str()))
+      throw std::invalid_argument("Originally modified entry '" + original.str() + "' isn't in the original dir '" + ORIGINAL.str() + "'");
+    notepad.push_back({original.str().substr(ORIGINAL.str().length() - ORIGINAL.name().length()), MODIFIED});
+  }
+  void was_added(Road current) {
+    // "/.../current/f1" -> "current/f1"
+    if (!current.str().starts_with(CURRENT.str()))
+      throw std::invalid_argument("Currently added entry '" + current.str() + "' isn't in the current dir '" + CURRENT.str() + "'");
+    notepad.push_back({current.str().substr(CURRENT.str().length() - CURRENT.name().length()), ADDED});
+  }
+
+
+
+  void note_deleted(Folder original, Folder current, size_t indent) noexcept {
     /*
       Note which files/folders are missing
       Example:
-        note_deleted_raw(changes, "./original", "./current");
-        changes == {
-          {"folder/subfolder", DELETED},
+        note_deleted("./original", "./current");
+        notepad == {
+          {"original/folder", DELETED},
           ...
         }
     */
-    make_out(Red);
+    for (Road originalEntry : original.list()) {
+      opt<Road> currentEntry = current.has(originalEntry.name());
+      out << '\n' << std::string(indent, ' ') << " > Original: " << originalEntry << " >>> ";
 
-    for (Road ogEntry : original.list()) {
-      opt<Road> counterPart = current.has(ogEntry.name());
-      if (counterPart.has_value()) // If counter part exists, skip
-        continue;
-
-      if (ogEntry.type() == stdfs::file_type::directory) {
-        opt<Folder> subFolder(*counterPart);
-        if (subFolder.has_value())
-          note_deleted_raw(notepad, *subFolder, Folder(ogEntry));
-        else {
-          notepad.push_back({ogEntry, DELETED});
-          out << ogEntry << " was deleted...\n";
+      if (originalEntry == stdfs::file_type::directory)
+        if (currentEntry.has_value() && *currentEntry == stdfs::file_type::directory) {
+          out << "📂⤵️";
+          note_deleted(Folder(originalEntry), Folder(*currentEntry), indent + 1);
         }
-      }
+        else {
+          out << "📁🗑️";
+          was_deleted(originalEntry);
+        }
+
       else // Files, sockets, ...
-        if (!counterPart) {
-          notepad.push_back({ogEntry, DELETED});
-          out << ogEntry << " was deleted...\n";
+        if (!currentEntry || originalEntry.type() != currentEntry.value().type()) {
+          was_deleted(originalEntry);
+          out << "📄🗑️";
         }
     }
   }
 
 
 
-  void note_added_raw(notepad_t& notepad, Folder original, Folder current) noexcept {
-    /*
-      Note which files/folders are new
-      Example:
-        note_added_raw(changes, "./original", "./current");
-        changes == {
-          {"folder/subfolder/newfile.txt", ADDED},
-          ...
-        }
-    */
-    make_out(Yellow);
-
-    for (Road entry : current.list()) {
-      if (entry.type() == stdfs::file_type::directory) {
-        opt<Folder> subFolder(original.has(entry.name()));
-        if (subFolder.has_value())
-          note_added_raw(notepad, *subFolder, Folder(entry));
-        else {
-          notepad.push_back({entry, ADDED});
-          out << entry << " is new...\n";
-        }
-      }
-      else  // Files, sockets, ...
-        if (!original.has(entry.name())) {
-          notepad.push_back({entry, ADDED});
-          out << entry << " is new...\n";
-        }
-    }
-  }
-
-
-
-  void note_changed_raw(notepad_t& notepad, Folder original, Folder current) noexcept {
+  void note_changed(Folder original, size_t indent) noexcept {
     /*
       Note which files/folders have been modified
       Example:
-        note_changed_raw(changes, "./original", "./current");
-        changes == {
-          {"folder/subfolder/changedfile.txt", MODIFIED},
+        note_changed("./original", "./current");
+        notepad == {
+          {"original/folder/changedfile.txt", MODIFIED},
           ...
         }
     */
-    make_out(Green);
+    for (Road originalEntry : original.list()) {
+      out << '\n' << std::string(indent, ' ') << " > Original: " << originalEntry << " >>> ";
+      opt<Road> currentEntry = original.has(original.name());
 
-    for (Road entry : current.list()) {
-      opt<Road> counterPart = original.has(entry.name());
-      if (!counterPart.has_value())
+      if (!currentEntry.has_value() || currentEntry.value().type() != originalEntry.type()) // Not handled here
         continue;
-      else if (counterPart.has_value() && (*counterPart).type() != entry.type()) {
-        notepad.push_back({entry, ADDED});
-        notepad.push_back({*counterPart, DELETED});
-        out << entry.name() << " was turned into another type...\n";
+      
+      if (originalEntry == stdfs::file_type::directory) {
+        out << "📂⤵️";
+        note_changed(Folder(originalEntry), indent + 1);
       }
-      else if (entry.type() == stdfs::file_type::directory)
-        note_changed_raw(notepad, Folder(*counterPart), Folder(entry));
-      else if (entry.type() == stdfs::file_type::regular) {
-        std::ifstream ogStream(counterPart.value().isAt, std::ios::binary);
-        std::ifstream entryStream(entry.isAt, std::ios::binary);
-        if (read_data(ogStream) != read_data(entryStream)) {
-          notepad.push_back({entry, MODIFIED});
-          out << entry.name() << " was modified...\n";
+
+      else if (originalEntry == stdfs::file_type::regular) {
+        std::ifstream original_ifstream(originalEntry.isAt, std::ios::binary);
+        std::ifstream current_ifstream(currentEntry.value().isAt, std::ios::binary);
+        if (read_data(original_ifstream) != read_data(current_ifstream)) {
+          out << "📝";
+          was_modified(originalEntry);
         }
       }
-      else
-        out << "Skipping " << entry << " because it is a special file and we don't handle those...\n";
+
+      else {
+        if (originalEntry.last_modified() != currentEntry.value().last_modified()) {
+          out << "📄📅";
+          was_modified(originalEntry);
+        }
+      }
+    }
+  }
+
+
+
+  void note_added(Folder original, Folder current, size_t indent) noexcept {
+    /*
+      Note which files/folders are new
+      Example:
+        note_added("./original", "./current");
+        notepad == {
+          {"current/newfile.txt", ADDED},
+          ...
+        }
+    */
+    for (Road currentEntry : current.list()) {
+      opt<Road> originalEntry(original.has(currentEntry.name()));
+      out << '\n' << std::string(indent, ' ') << " > Current: " << currentEntry << " >>> ";
+
+      if (currentEntry == stdfs::file_type::directory) {
+        if (originalEntry.has_value() && *originalEntry == stdfs::file_type::directory) {
+          out << "📂⤵️";
+          note_added(Folder(*originalEntry), Folder(currentEntry), indent + 1);
+        }
+        else {
+          out << "📂➕... (including " << Folder(*currentEntry).list().size() << " subentries)";
+          was_added(Folder(*currentEntry));
+        }
+      }
+      else { // Files and such
+        if (!originalEntry.has_value() || originalEntry.value().type() != currentEntry.type()) {
+          out << "📄➕";
+          was_added(currentEntry);
+        }
+      }
     }
   }
 
@@ -137,17 +172,15 @@ namespace IncrementalBackup {
     /*
       Test the IncrementalBackup namespace
     */
-    make_out(Magenta);
-    Folder original("C:\\Users\\BLECHBUCHSE\\Desktop\\original");
-    Folder current("C:\\Users\\BLECHBUCHSE\\Desktop\\current");
 
-    notepad_t changes;
-    note_deleted_raw(changes, original, current);
-    note_added_raw(changes, original, current);
-    note_changed_raw(changes, original, current);
+    out << '[' << TimeStamp().as_str() << "]" << Bold << Red << "[note_deleted_raw]" << Reset << ':';
+    note_deleted(ORIGINAL, CURRENT, 1);
+    // note_added(ORIGINAL, CURRENT, 1);
+    // note_changed(ORIGINAL, CURRENT, 1);
+    out << Reset << "\n\n\n";
 
-    out << "Changes between " << original << " and " << current << ":\n";
-    for (const auto& [entry, change] : changes) {
+    // out << "\n\nChanges between " << original << " and " << current << ":";
+    for (const auto& [entry, change] : notepad) {
       str_t changeStr;
       switch (change) {
         case MODIFIED: changeStr = "Modified"; break;
@@ -155,9 +188,9 @@ namespace IncrementalBackup {
         case DELETED: changeStr = "Deleted"; break;
         default: changeStr = "Unknown"; break;
       }
-      out << "- " << changeStr << ": " << entry << '\n';
+      // out << "- " << changeStr << ": " << entry << '\n';
     }
-    out << "Total changes: " << changes.size() << std::endl;
+    out << Bold << "\nTotal changes: " << notepad.size() << Reset << std::endl;
   }
 };
 
