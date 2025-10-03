@@ -1,8 +1,8 @@
 #include "../CeggsyLib/cslib.h++" // Adjust path as needed (get it on Github ZiggityZaza/CeggsyLib)
 #include <iostream>
 using namespace cslib;
-const Folder ORIGINAL("C:\\Users\\BLECHBUCHSE\\Desktop\\og");
-const Folder CURRENT("C:\\Users\\BLECHBUCHSE\\Desktop\\new");
+const Folder ORIGINAL("..\\og");
+const Folder CURRENT("..\\new");
 
 std::ostream& out = std::cerr;
 // std::ofstream out("./logs.txt");
@@ -108,7 +108,7 @@ namespace IncrementalBackup {
 
       if (!currentEntry.has_value() || currentEntry.value().type() != originalEntry.type()) // Not handled here
         continue;
-      
+
       if (originalEntry == stdfs::file_type::directory) {
         out << " >>> 📂⤵️";
         note_changed(Folder(originalEntry), Folder(*currentEntry), indent + 1);
